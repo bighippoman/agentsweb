@@ -475,17 +475,31 @@ function incrementStat(kv: KVNamespace, stat: string): void {
 // Handlers
 // ============================================================
 
-async function handleRead(url: string, kv: KVNamespace, ip: string): Promise<Response> {
+async function handleRead(url: string, kv: KVNamespace, ip: string, request: Request): Promise<Response> {
   const urlErr = validateUrl(url);
   if (urlErr) return json({ error: urlErr }, 400);
 
+  // --- EDGE CACHE: check CF Cache API first (sub-1ms) ---
+  const cache = caches.default;
+  const cacheKey = new Request(`https://agentsweb.org/_cache/${encodeURIComponent(url)}`, { method: "GET" });
+  const cachedResponse = await cache.match(cacheKey);
+  if (cachedResponse) {
+    // ETag check against edge-cached response
+    const etag = cachedResponse.headers.get("ETag");
+    if (etag && request.headers.get("If-None-Match") === etag) {
+      return new Response(null, { status: 304, headers: { ETag: etag, ...securityHeaders() } });
+    }
+    incrementStat(kv, "hits");
+    return cachedResponse;
+  }
+
+  // --- KV LOOKUP (only on edge cache miss) ---
   if (!(await checkRateLimit(kv, ip, "read"))) {
     return json({ error: "rate limited" }, 429);
   }
 
   const urlHash = await hashUrl(url);
 
-  // Check DMCA flag before serving
   const dmcaFlag = await kv.get(`dmca:${urlHash}`);
   if (dmcaFlag) return json({ error: "removed per DMCA notice" }, 451);
 
@@ -497,26 +511,37 @@ async function handleRead(url: string, kv: KVNamespace, ip: string): Promise<Res
   try {
     entry = JSON.parse(raw);
   } catch {
-    await kv.delete(key);
+    _ctx?.waitUntil(kv.delete(key));
     return json({ status: "miss" }, 404);
   }
 
   incrementStat(kv, "hits");
 
-  // ETag support — skip sending body if client has current version
   const etag = `"${entry.content_hash.slice(0, 16)}"`;
-  const ifNoneMatch = _request?.headers.get("If-None-Match");
-  if (ifNoneMatch === etag) {
+  if (request.headers.get("If-None-Match") === etag) {
     return new Response(null, { status: 304, headers: { ETag: etag, ...securityHeaders() } });
   }
 
-  return json({
+  const stale = (Date.now() - entry.updated_at) > getTtl(entry.trust_level, entry.url) * 750; // 75% of TTL
+
+  const response = json({
     url: entry.url,
     markdown: entry.markdown,
     trust_level: entry.trust_level,
     source: entry.source,
     age_seconds: Math.floor((Date.now() - entry.updated_at) / 1000),
+    ...(stale ? { stale: true } : {}),
   }, 200, etag);
+
+  // --- STORE IN EDGE CACHE (5 min TTL for popular pages) ---
+  const cacheResponse = response.clone();
+  const cacheHeaders = new Headers(cacheResponse.headers);
+  cacheHeaders.set("Cache-Control", "public, max-age=300"); // 5 min edge TTL
+  cacheHeaders.set("ETag", etag);
+  const toCache = new Response(cacheResponse.body, { status: 200, headers: cacheHeaders });
+  _ctx?.waitUntil(cache.put(cacheKey, toCache));
+
+  return response;
 }
 
 async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admin = false): Promise<Response> {
@@ -617,6 +642,13 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
   });
 
   incrementStat(kv, "writes");
+
+  // Invalidate edge cache for this URL
+  _ctx?.waitUntil((async () => {
+    const c = caches.default;
+    await c.delete(new Request(`https://agentsweb.org/_cache/${encodeURIComponent(url)}`));
+    await c.delete(new Request(`https://agentsweb.org/_raw/${encodeURIComponent(url)}`));
+  })());
 
   // Maintain URL index for search
   _ctx?.waitUntil((async () => {
@@ -751,6 +783,58 @@ async function handleSearch(query: string, kv: KVNamespace, ip: string): Promise
     .slice(0, 20);
 
   return json({ results: matches, query, total: matches.length });
+}
+
+// ============================================================
+// Raw markdown endpoint — zero JSON overhead, just text
+// ============================================================
+
+async function handleRawRead(url: string, kv: KVNamespace, ip: string): Promise<Response> {
+  const urlErr = validateUrl(url);
+  if (urlErr) return new Response(urlErr, { status: 400, headers: securityHeaders() });
+
+  // Edge cache for raw endpoint too
+  const cache = caches.default;
+  const cacheKey = new Request(`https://agentsweb.org/_raw/${encodeURIComponent(url)}`, { method: "GET" });
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    incrementStat(kv, "hits");
+    return cached;
+  }
+
+  if (!(await checkRateLimit(kv, ip, "read"))) {
+    return new Response("rate limited", { status: 429, headers: securityHeaders() });
+  }
+
+  const urlHash = await hashUrl(url);
+  const dmcaFlag = await kv.get(`dmca:${urlHash}`);
+  if (dmcaFlag) return new Response("removed per DMCA notice", { status: 451, headers: securityHeaders() });
+
+  const raw = await kv.get(`cache:${urlHash}`);
+  if (!raw) return new Response("miss", { status: 404, headers: securityHeaders() });
+
+  let entry: CacheEntry;
+  try { entry = JSON.parse(raw); } catch { return new Response("miss", { status: 404, headers: securityHeaders() }); }
+
+  incrementStat(kv, "hits");
+
+  const response = new Response(entry.markdown, {
+    headers: {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "X-Trust-Level": String(entry.trust_level),
+      "X-Source": entry.source,
+      "ETag": `"${entry.content_hash.slice(0, 16)}"`,
+      ...securityHeaders(),
+    },
+  });
+
+  // Edge cache
+  const toCache = response.clone();
+  _ctx?.waitUntil(cache.put(cacheKey, new Response(toCache.body, {
+    headers: { ...Object.fromEntries(toCache.headers), "Cache-Control": "public, max-age=300" },
+  })));
+
+  return response;
 }
 
 async function handleStats(kv: KVNamespace): Promise<Response> {
@@ -963,9 +1047,14 @@ async function handleTakedown(request: Request, kv: KVNamespace, ip: string): Pr
     ip,
   }));
 
-  // Delete the cached entry
+  // Delete the cached entry + edge cache
   const key = `cache:${urlHash}`;
   await kv.delete(key);
+  _ctx?.waitUntil((async () => {
+    const c = caches.default;
+    await c.delete(new Request(`https://agentsweb.org/_cache/${encodeURIComponent(body.url)}`));
+    await c.delete(new Request(`https://agentsweb.org/_raw/${encodeURIComponent(body.url)}`));
+  })());
 
   incrementStat(kv, "takedowns");
 
@@ -1238,7 +1327,11 @@ export default {
     // API routes
     try {
       if (method === "GET" && url.pathname === "/" && url.searchParams.has("url")) {
-        return await handleRead(url.searchParams.get("url")!, env.CACHE, ip);
+        return await handleRead(url.searchParams.get("url")!, env.CACHE, ip, request);
+      }
+
+      if (method === "GET" && url.pathname === "/raw" && url.searchParams.has("url")) {
+        return await handleRawRead(url.searchParams.get("url")!, env.CACHE, ip);
       }
 
       if (method === "PUT" && url.pathname === "/") {
