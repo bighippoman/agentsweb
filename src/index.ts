@@ -472,56 +472,107 @@ async function handleStats(kv: KVNamespace): Promise<Response> {
 // Landing page
 // ============================================================
 
-function landingPage(): Response {
+async function landingPage(kv: KVNamespace): Promise<Response> {
+  const hits = parseInt((await kv.get("stats:hits")) || "0", 10);
+  const writes = parseInt((await kv.get("stats:writes")) || "0", 10);
+
   const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>agentsweb.org</title>
+  <title>agentsweb.org — The web, pre-read for AI</title>
+  <meta name="description" content="A global shared cache of web pages as clean markdown. Sub-50ms reads. Self-healing consensus. Open source.">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-    .container { max-width: 640px; padding: 2rem; }
-    h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; color: #fff; }
-    .subtitle { color: #888; margin-bottom: 2rem; font-size: 1.1rem; }
-    .endpoint { background: #161616; border: 1px solid #2a2a2a; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
-    .method { font-weight: 700; font-size: 0.8rem; display: inline-block; padding: 2px 8px; border-radius: 4px; margin-right: 8px; }
-    .get { background: #1a3a2a; color: #4ade80; }
-    .put { background: #3a2a1a; color: #fbbf24; }
-    .post { background: #1a2a3a; color: #60a5fa; }
-    .path { font-family: monospace; color: #ccc; }
-    .desc { color: #888; font-size: 0.9rem; margin-top: 0.5rem; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
+    .hero { max-width: 720px; margin: 0 auto; padding: 4rem 2rem 2rem; }
+    h1 { font-size: 2.5rem; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+    .tagline { color: #888; font-size: 1.2rem; margin: 0.75rem 0 2rem; line-height: 1.5; }
+    .stats { display: flex; gap: 2rem; margin-bottom: 2.5rem; }
+    .stat { background: #111; border: 1px solid #222; border-radius: 10px; padding: 1.25rem 1.5rem; flex: 1; }
+    .stat-value { font-size: 1.8rem; font-weight: 700; color: #fff; font-variant-numeric: tabular-nums; }
+    .stat-label { color: #666; font-size: 0.85rem; margin-top: 0.25rem; }
+    .install { background: #111; border: 1px solid #222; border-radius: 10px; padding: 1.5rem; margin-bottom: 2.5rem; }
+    .install-label { color: #888; font-size: 0.85rem; margin-bottom: 0.75rem; }
+    .install code { background: #0d0d0d; color: #4ade80; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.95rem; display: block; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid #1a1a1a; overflow-x: auto; }
+    h2 { font-size: 1.1rem; font-weight: 600; color: #fff; margin-bottom: 1rem; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.8rem; }
+    .how { margin-bottom: 2.5rem; }
+    .how p { color: #999; line-height: 1.7; margin-bottom: 0.75rem; }
+    .how strong { color: #ccc; }
+    .endpoints { margin-bottom: 2.5rem; }
+    .ep { background: #111; border: 1px solid #1a1a1a; border-radius: 8px; padding: 0.85rem 1.1rem; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 0.75rem; }
+    .method { font-weight: 700; font-size: 0.7rem; padding: 3px 8px; border-radius: 4px; font-family: monospace; min-width: 42px; text-align: center; }
+    .get { background: #0f2918; color: #4ade80; }
+    .put { background: #2a1f0a; color: #fbbf24; }
+    .post { background: #0f1929; color: #60a5fa; }
+    .ep-path { font-family: monospace; color: #ccc; font-size: 0.9rem; }
+    .ep-desc { color: #666; font-size: 0.85rem; margin-left: auto; }
+    .security { margin-bottom: 2.5rem; }
+    .sec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    .sec-item { background: #111; border: 1px solid #1a1a1a; border-radius: 6px; padding: 0.6rem 0.85rem; color: #888; font-size: 0.8rem; }
+    .curl { margin-bottom: 2.5rem; }
+    .curl code { background: #0d0d0d; color: #ccc; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem; display: block; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid #1a1a1a; white-space: pre; overflow-x: auto; }
+    .footer { border-top: 1px solid #1a1a1a; padding-top: 2rem; margin-top: 1rem; color: #444; font-size: 0.8rem; display: flex; justify-content: space-between; }
     a { color: #60a5fa; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    .footer { margin-top: 2rem; color: #555; font-size: 0.85rem; }
+    @media (max-width: 600px) { .stats { flex-direction: column; gap: 0.75rem; } .sec-grid { grid-template-columns: 1fr; } .ep { flex-wrap: wrap; } .ep-desc { margin-left: 0; } }
   </style>
 </head>
 <body>
-  <div class="container">
+  <div class="hero">
     <h1>agentsweb.org</h1>
-    <p class="subtitle">The web, cached as clean markdown for AI agents.</p>
-    <div class="endpoint">
-      <span class="method get">GET</span>
-      <span class="path">/?url={url}</span>
-      <p class="desc">Read cached markdown for a URL.</p>
+    <p class="tagline">The web, pre-read for AI. A global shared cache of web pages as clean markdown. Sub-50ms reads from the edge. Self-healing consensus prevents poisoning.</p>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-value">${writes.toLocaleString()}</div><div class="stat-label">pages cached</div></div>
+      <div class="stat"><div class="stat-value">${hits.toLocaleString()}</div><div class="stat-label">cache hits served</div></div>
+      <div class="stat"><div class="stat-value">&lt;50ms</div><div class="stat-label">global read latency</div></div>
     </div>
-    <div class="endpoint">
-      <span class="method put">PUT</span>
-      <span class="path">/</span>
-      <p class="desc">Contribute cached markdown. Body: { url, markdown, source }</p>
+
+    <div class="install">
+      <div class="install-label">Get started with intercept-mcp (reads + writes automatically):</div>
+      <code>npx -y intercept-mcp</code>
     </div>
-    <div class="endpoint">
-      <span class="method post">POST</span>
-      <span class="path">/confirm</span>
-      <p class="desc">Confirm a cached entry matches your local fetch. Body: { url, content_hash }</p>
+
+    <div class="how">
+      <h2>How it works</h2>
+      <p>Every AI agent fetches the same pages, fights the same captchas, and converts the same HTML. <strong>That's redundant.</strong></p>
+      <p>With agentsweb, the first agent to fetch a URL caches the clean markdown. Every agent after gets it instantly. The more agents use it, the faster everyone gets.</p>
+      <p><strong>Self-healing:</strong> Entries gain trust as independent sources confirm them. Poisoned content self-destructs on the next legitimate read. No single source is trusted blindly.</p>
     </div>
-    <div class="endpoint">
-      <span class="method get">GET</span>
-      <span class="path">/stats</span>
-      <p class="desc">Public cache statistics.</p>
+
+    <div class="endpoints">
+      <h2>API</h2>
+      <div class="ep"><span class="method get">GET</span><span class="ep-path">/?url={url}</span><span class="ep-desc">Read cached markdown</span></div>
+      <div class="ep"><span class="method put">PUT</span><span class="ep-path">/</span><span class="ep-desc">Contribute markdown</span></div>
+      <div class="ep"><span class="method post">POST</span><span class="ep-path">/confirm</span><span class="ep-desc">Confirm entry integrity</span></div>
+      <div class="ep"><span class="method get">GET</span><span class="ep-path">/stats</span><span class="ep-desc">Live statistics</span></div>
     </div>
-    <p class="footer">Powered by <a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a>. Self-healing consensus cache.</p>
+
+    <div class="curl">
+      <h2>Try it</h2>
+      <code>curl "https://agentsweb.org/?url=https://example.com"</code>
+    </div>
+
+    <div class="security">
+      <h2>Security</h2>
+      <div class="sec-grid">
+        <div class="sec-item">Prompt injection scanning</div>
+        <div class="sec-item">SSRF / private IP blocking</div>
+        <div class="sec-item">Captcha &amp; login wall detection</div>
+        <div class="sec-item">XSS / script tag filtering</div>
+        <div class="sec-item">Per-IP rate limiting</div>
+        <div class="sec-item">Trust-level consensus</div>
+        <div class="sec-item">Request body size limits</div>
+        <div class="sec-item">Self-healing on read</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span>Powered by <a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> &middot; <a href="https://github.com/bighippoman/agentsweb">open source</a></span>
+      <span>Cloudflare Workers + KV</span>
+    </div>
   </div>
 </body>
 </html>`;
@@ -534,6 +585,7 @@ function landingPage(): Response {
       "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
       "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
       "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+      "Cache-Control": "public, max-age=60",
     },
   });
 }
@@ -560,7 +612,7 @@ export default {
 
     // Landing page
     if (method === "GET" && url.pathname === "/" && !url.searchParams.has("url")) {
-      return landingPage();
+      return await landingPage(env.CACHE);
     }
 
     // API routes
