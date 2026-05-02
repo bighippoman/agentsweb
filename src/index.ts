@@ -813,6 +813,141 @@ async function handleSearch(query: string, kv: KVNamespace, ip: string): Promise
 }
 
 // ============================================================
+// Web search — real search via SearXNG/DDG
+// ============================================================
+
+interface SearchResult { title: string; url: string; snippet: string; }
+
+async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip: string): Promise<Response> {
+  if (!(await checkRateLimit(kv, ip, "read"))) return json({ error: "rate limited" }, 429);
+  if (!query || query.length < 2 || query.length > 500) return json({ error: "query must be 2-500 characters" }, 400);
+  const safeCount = Math.min(Math.max(1, count || 5), 20);
+
+  // SearXNG
+  try {
+    const resp = await fetch(`https://search.sapti.me/search?q=${encodeURIComponent(query)}&format=json&categories=general&language=en`, { signal: AbortSignal.timeout(8_000) });
+    if (resp.ok) {
+      const data = (await resp.json()) as { results?: Array<{ title: string; url: string; content: string }> };
+      if (data.results?.length) {
+        incrementStat(kv, "searches");
+        return json({ query, results: data.results.slice(0, safeCount).map((r) => ({ title: r.title, url: r.url, snippet: r.content })), source: "searxng" });
+      }
+    }
+  } catch {}
+
+  // DDG fallback
+  try {
+    const resp = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (resp.ok) {
+      const html = await resp.text();
+      const results: SearchResult[] = [];
+      const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+      let m;
+      while ((m = re.exec(html)) && results.length < safeCount) {
+        const url = decodeURIComponent(m[1].replace(/.*uddg=/, "").replace(/&.*/, ""));
+        if (url.startsWith("http")) results.push({ title: m[2].replace(/<[^>]+>/g, "").trim(), url, snippet: "" });
+      }
+      if (results.length) { incrementStat(kv, "searches"); return json({ query, results, source: "duckduckgo" }); }
+    }
+  } catch {}
+
+  return json({ error: "search unavailable" }, 503);
+}
+
+// ============================================================
+// Research — search + fetch + cache in one call
+// ============================================================
+
+async function handleResearch(query: string, count: number, kv: KVNamespace, ip: string): Promise<Response> {
+  if (!(await checkRateLimit(kv, ip, "read"))) return json({ error: "rate limited" }, 429);
+  if (!query || query.length < 2 || query.length > 500) return json({ error: "query must be 2-500 chars" }, 400);
+  const safeCount = Math.min(Math.max(1, count || 3), 5);
+
+  const searchResp = await handleWebSearch(query, safeCount, kv, ip);
+  const searchData = (await searchResp.clone().json()) as { results?: SearchResult[] };
+  if (!searchData.results?.length) return json({ error: "no search results", query }, 404);
+
+  const pages: Array<{ title: string; url: string; snippet: string; markdown: string | null; source: string }> = [];
+
+  await Promise.all(searchData.results.map(async (result) => {
+    const urlHash = await hashUrl(result.url);
+    if (await kv.get(`dmca:${urlHash}`)) { pages.push({ ...result, markdown: null, source: "dmca" }); return; }
+
+    const raw = await kv.get(`cache:${urlHash}`);
+    if (raw) {
+      try {
+        const entry: CacheEntry = JSON.parse(raw);
+        pages.push({ ...result, markdown: entry.markdown, source: `cache (trust:${entry.trust_level})` });
+        incrementStat(kv, "hits");
+        return;
+      } catch {}
+    }
+
+    try {
+      const resp = await fetch(`https://r.jina.ai/${result.url}`, { headers: { Accept: "text/markdown" }, signal: AbortSignal.timeout(15_000) });
+      if (!resp.ok) { pages.push({ ...result, markdown: null, source: "fetch failed" }); return; }
+      const markdown = await resp.text();
+      if (markdown.length < 200 || validateContent(markdown)) { pages.push({ ...result, markdown: null, source: "filtered" }); return; }
+
+      const contentHash = await hashContent(markdown);
+      const ipHash = (await hashContent(ip)).slice(0, 16);
+      const entry: CacheEntry = { url: result.url, markdown, trust_level: 1, source: "jina", created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: markdown.length, contributors: [ipHash] };
+      waitUntilBg(kv.put(`cache:${urlHash}`, JSON.stringify(entry), { expirationTtl: getTtl(1, result.url) }));
+      incrementStat(kv, "writes");
+      pages.push({ ...result, markdown, source: "fresh" });
+    } catch { pages.push({ ...result, markdown: null, source: "error" }); }
+  }));
+
+  const ordered = searchData.results.map((r) => pages.find((p) => p.url === r.url)).filter(Boolean);
+  incrementStat(kv, "researches");
+  return json({ query, results: ordered, cached: ordered.filter((p) => p!.source.startsWith("cache")).length, fetched: ordered.filter((p) => p!.source === "fresh").length });
+}
+
+// ============================================================
+// Fetch on demand — give URL, get markdown, auto-cached
+// ============================================================
+
+async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string): Promise<Response> {
+  const urlErr = validateUrl(url);
+  if (urlErr) return json({ error: urlErr }, 400);
+  if (!(await checkRateLimit(kv, ip, "write"))) return json({ error: "rate limited" }, 429);
+  if (await isAbuseBanned(kv, ip)) return json({ error: "temporarily banned" }, 403);
+
+  const urlHash = await hashUrl(url);
+  if (await kv.get(`dmca:${urlHash}`)) return json({ error: "removed per DMCA notice" }, 451);
+
+  const raw = await kv.get(`cache:${urlHash}`);
+  if (raw) {
+    try {
+      const entry: CacheEntry = JSON.parse(raw);
+      incrementStat(kv, "hits");
+      return json({ url: entry.url, markdown: entry.markdown, trust_level: entry.trust_level, source: `cache (${entry.source})`, fresh: false });
+    } catch {}
+  }
+
+  try {
+    const resp = await fetch(`https://r.jina.ai/${url}`, { headers: { Accept: "text/markdown" }, signal: AbortSignal.timeout(15_000) });
+    if (!resp.ok) return json({ error: "fetch failed" }, 502);
+    const markdown = await resp.text();
+    if (markdown.length < 200) return json({ error: "content too short" }, 422);
+    const rejection = validateContent(markdown);
+    if (rejection) return json({ error: rejection }, 422);
+
+    const contentHash = await hashContent(markdown);
+    const ipHash = (await hashContent(ip)).slice(0, 16);
+    const entry: CacheEntry = { url, markdown, trust_level: 1, source: "jina", created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: markdown.length, contributors: [ipHash] };
+    await kv.put(`cache:${urlHash}`, JSON.stringify(entry), { expirationTtl: getTtl(1, url) });
+    incrementStat(kv, "writes");
+    return json({ url, markdown, trust_level: 1, source: "fresh", fresh: true });
+  } catch (e) {
+    return json({ error: `fetch error: ${(e as Error).message}` }, 502);
+  }
+}
+
+// ============================================================
 // Raw markdown endpoint — zero JSON overhead, just text
 // ============================================================
 
@@ -901,6 +1036,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
   <meta name="description" content="A global shared cache of web pages as clean markdown. Sub-50ms reads. Self-healing consensus. Open source.">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://agentsweb.org">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold'>a</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
@@ -937,7 +1073,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
 <body>
   <div class="hero">
     <h1>agentsweb.org</h1>
-    <p class="tagline">The web, pre-read for AI. A global shared cache of web pages as clean markdown. Sub-50ms reads from the edge. Self-healing consensus prevents poisoning.</p>
+    <p class="tagline">The web, but for robots. Search it. Read it. Cache it. Your AI agent's internet — pre-chewed into clean markdown so it doesn't have to fight captchas like some kind of animal.</p>
 
     <div class="stats">
       <div class="stat"><div class="stat-value">${writes.toLocaleString()}</div><div class="stat-label">pages cached</div></div>
@@ -953,14 +1089,18 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
 
     <div class="section">
       <h2>How it works</h2>
-      <p>Every AI agent fetches the same pages, fights the same captchas, and converts the same HTML. <strong>That's redundant.</strong></p>
-      <p>With agentsweb, the first agent to fetch a URL caches the clean markdown globally. Every agent after gets it instantly. The more agents use it, the faster everyone gets.</p>
-      <p><strong>Self-healing:</strong> Entries gain trust as independent sources confirm them. Poisoned content self-destructs on the next legitimate read. No single source is trusted blindly.</p>
+      <p>Every AI agent independently fetches the same pages, fights the same captchas, parses the same HTML. Millions of times a day. <strong>It's like if every human had to personally visit the library for every Google search.</strong></p>
+      <p>agentsweb fixes that. Search the web, fetch any URL, get clean markdown. First agent to read a page caches it for everyone. The network gets smarter with every query.</p>
+      <p><strong>Self-healing consensus:</strong> Entries gain trust as independent sources confirm them. Try to poison the cache? It fixes itself on the next legitimate read. Good luck.</p>
     </div>
 
     <div class="section">
       <h2>API</h2>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/?url={url}</span><span class="ep-d">Read cached markdown</span></div>
+      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/web?q={query}</span><span class="ep-d">Search the web</span></div>
+      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/research?q={query}</span><span class="ep-d">Search + fetch + cache (one call)</span></div>
+      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/fetch?url={url}</span><span class="ep-d">Fetch any URL, auto-cached</span></div>
+      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/?url={url}</span><span class="ep-d">Read from cache only</span></div>
+      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/raw?url={url}</span><span class="ep-d">Raw markdown, zero JSON</span></div>
       <div class="ep"><span class="m mg">GET</span><span class="ep-p">/batch?urls={url1},{url2}</span><span class="ep-d">Batch read (up to 20)</span></div>
       <div class="ep"><span class="m mg">GET</span><span class="ep-p">/search?q={query}</span><span class="ep-d">Search cached URLs</span></div>
       <div class="ep"><span class="m mp">PUT</span><span class="ep-p">/</span><span class="ep-d">Contribute markdown</span></div>
@@ -971,25 +1111,34 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     <div class="section">
       <h2>Try it</h2>
       <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem">
-        <input id="tryUrl" type="text" placeholder="https://react.dev/learn" value="https://react.dev/learn" style="flex:1;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:0.6rem 0.8rem;color:#fff;font-family:monospace;font-size:0.85rem;outline:none">
-        <button onclick="tryFetch()" style="background:#1a3a2a;color:#4ade80;border:1px solid #2a4a3a;border-radius:6px;padding:0.6rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.85rem">Fetch</button>
+        <input id="tryQ" type="text" placeholder="how does React server components work" value="cloudflare workers tutorial" style="flex:1;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:0.6rem 0.8rem;color:#fff;font-family:monospace;font-size:0.85rem;outline:none">
+        <button onclick="tryResearch()" id="tryBtn" style="background:#1a3a2a;color:#4ade80;border:1px solid #2a4a3a;border-radius:6px;padding:0.6rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.85rem">Research</button>
       </div>
-      <pre id="tryResult" style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:6px;padding:0.75rem 1rem;color:#888;font-family:monospace;font-size:0.8rem;max-height:300px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+      <pre id="tryResult" style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:6px;padding:0.75rem 1rem;color:#888;font-family:monospace;font-size:0.8rem;max-height:400px;overflow:auto;white-space:pre-wrap;display:none"></pre>
       <script>
-        async function tryFetch() {
-          const url = document.getElementById('tryUrl').value;
+        async function tryResearch() {
+          const q = document.getElementById('tryQ').value;
           const el = document.getElementById('tryResult');
+          const btn = document.getElementById('tryBtn');
           el.style.display = 'block';
-          el.textContent = 'Loading...';
+          el.textContent = 'Searching + fetching + caching...';
+          btn.disabled = true; btn.textContent = '...';
           try {
-            const r = await fetch('/?url=' + encodeURIComponent(url));
+            const r = await fetch('/research?q=' + encodeURIComponent(q) + '&count=3');
             const d = await r.json();
-            if (d.markdown) {
-              el.textContent = 'trust: ' + d.trust_level + ' | source: ' + d.source + ' | ' + d.markdown.length + ' chars\\n\\n' + d.markdown.slice(0, 2000) + (d.markdown.length > 2000 ? '\\n\\n... (' + d.markdown.length + ' chars total)' : '');
+            if (d.results) {
+              let out = d.results.length + ' results | ' + (d.cached||0) + ' from cache | ' + (d.fetched||0) + ' freshly fetched\\n';
+              for (const p of d.results) {
+                out += '\\n--- ' + p.title + ' ---\\n' + p.url + '\\nsource: ' + p.source + '\\n';
+                if (p.markdown) out += p.markdown.slice(0, 500) + '\\n';
+                else out += '(no content)\\n';
+              }
+              el.textContent = out;
             } else {
               el.textContent = JSON.stringify(d, null, 2);
             }
           } catch (e) { el.textContent = 'Error: ' + e.message; }
+          btn.disabled = false; btn.textContent = 'Research';
         }
       </script>
     </div>
@@ -1387,6 +1536,21 @@ export default {
 
       if (method === "GET" && url.pathname === "/search" && url.searchParams.has("q")) {
         return await handleSearch(url.searchParams.get("q")!, env.CACHE, ip);
+      }
+
+      // Web search — real search engine results
+      if (method === "GET" && url.pathname === "/web" && url.searchParams.has("q")) {
+        return await handleWebSearch(url.searchParams.get("q")!, parseInt(url.searchParams.get("count") || "5"), env.CACHE, ip);
+      }
+
+      // Research — search + fetch + cache in one call
+      if (method === "GET" && url.pathname === "/research" && url.searchParams.has("q")) {
+        return await handleResearch(url.searchParams.get("q")!, parseInt(url.searchParams.get("count") || "3"), env.CACHE, ip);
+      }
+
+      // Fetch on demand — give URL, get markdown, auto-cached
+      if (method === "GET" && url.pathname === "/fetch" && url.searchParams.has("url")) {
+        return await handleFetchAndCache(url.searchParams.get("url")!, env.CACHE, ip);
       }
 
       if (method === "POST" && url.pathname === "/takedown") {
