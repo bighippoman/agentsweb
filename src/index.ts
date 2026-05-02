@@ -1292,6 +1292,47 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         const md = convertHtmlToMarkdown(html);
         return md.length >= 200 ? { markdown: md, source: "google-cache" } : null;
       })(),
+
+      // archive.ph via timemap (find snapshot, fetch via raw)
+      (async (): Promise<{ markdown: string; source: string } | null> => {
+        // Try both with and without www
+        for (const candidate of [url, url.replace("://www.", "://"), url.replace("://", "://www.")]) {
+          try {
+            const tmResp = await fetch(`https://archive.ph/timemap/${candidate}`, { signal: AbortSignal.timeout(6_000) });
+            if (!tmResp.ok) continue;
+            const body = await tmResp.text();
+            if (body.includes("TimeMap does not exists")) continue;
+            // Extract latest memento URL
+            const lines = body.split(",\n").map((l: string) => l.trim());
+            let snapshotUrl: string | null = null;
+            for (const line of lines) {
+              if (!line.includes("memento")) continue;
+              const m = line.match(/^<([^>]+)>/);
+              if (m) snapshotUrl = m[1];
+            }
+            if (!snapshotUrl) continue;
+            // Fetch the snapshot page directly (may get captcha)
+            const pageResp = await fetch(snapshotUrl, {
+              headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" },
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (!pageResp.ok) continue;
+            const html = await pageResp.text();
+            if (html.toLowerCase().includes("captcha") || html.toLowerCase().includes("security check")) continue;
+            const md = convertHtmlToMarkdown(html);
+            if (md.length >= 200) return { markdown: md, source: "archive-ph" };
+          } catch { continue; }
+        }
+        return null;
+      })(),
+
+      // AllOrigins CORS proxy (another free proxy)
+      (async (): Promise<{ markdown: string; source: string } | null> => {
+        const resp = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10_000) });
+        if (!resp.ok) return null;
+        const md = convertHtmlToMarkdown(await resp.text());
+        return md.length >= 200 ? { markdown: md, source: "allorigins" } : null;
+      })(),
     ]);
 
     // Pick the best result from tier 2
