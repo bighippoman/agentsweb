@@ -724,17 +724,42 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
     await c.delete(new Request(`https://agentsweb.org/_raw/${encodeURIComponent(normalizeUrlForCache(url))}`));
   })());
 
-  // Maintain URL index for search
+  // Maintain URL index + content search index
   waitUntilBg((async () => {
+    const normalized = normalizeUrlForCache(url);
+
+    // URL index
     const indexRaw = await kv.get("index:urls");
     const urls: string[] = indexRaw ? JSON.parse(indexRaw) : [];
-    const normalized = normalizeUrlForCache(url);
     if (!urls.includes(normalized)) {
       urls.push(normalized);
-      // Keep index bounded
       if (urls.length > 10_000) urls.splice(0, urls.length - 10_000);
       await kv.put("index:urls", JSON.stringify(urls));
     }
+
+    // Content search index — extract title + snippet for local search
+    const titleMatch = markdown.match(/^#\s+(.+)/m);
+    const title = titleMatch ? titleMatch[1].slice(0, 200) : "";
+    const snippet = markdown
+      .replace(/^#.+$/gm, "") // strip headings
+      .replace(/\[.*?\]\(.*?\)/g, "") // strip links
+      .replace(/[*_`]/g, "") // strip formatting
+      .trim()
+      .slice(0, 300);
+
+    const searchEntry = { url: normalized, title, snippet };
+    const searchIndexRaw = await kv.get("index:search");
+    const searchIndex: Array<{ url: string; title: string; snippet: string }> = searchIndexRaw ? JSON.parse(searchIndexRaw) : [];
+
+    // Update or add
+    const existing = searchIndex.findIndex((e) => e.url === normalized);
+    if (existing >= 0) {
+      searchIndex[existing] = searchEntry;
+    } else {
+      searchIndex.push(searchEntry);
+      if (searchIndex.length > 10_000) searchIndex.splice(0, searchIndex.length - 10_000);
+    }
+    await kv.put("index:search", JSON.stringify(searchIndex));
   })());
 
   return json({ status: "accepted", trust_level: 1 });
@@ -938,12 +963,59 @@ async function searchDDG(query: string, count: number): Promise<SearchResult[] |
   } catch { return null; }
 }
 
+// ============================================================
+// Local search — search our own cached content, zero external deps
+// ============================================================
+
+async function searchLocal(query: string, count: number, kv: KVNamespace): Promise<SearchResult[] | null> {
+  const searchIndexRaw = await kv.get("index:search");
+  if (!searchIndexRaw) return null;
+
+  const searchIndex: Array<{ url: string; title: string; snippet: string }> = JSON.parse(searchIndexRaw);
+  const queryWords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  if (!queryWords.length) return null;
+
+  // Score each entry by how many query words match in title + snippet + url
+  const scored = searchIndex.map((entry) => {
+    const text = `${entry.title} ${entry.snippet} ${entry.url}`.toLowerCase();
+    let score = 0;
+    for (const word of queryWords) {
+      if (text.includes(word)) score++;
+      // Bonus for title match
+      if (entry.title.toLowerCase().includes(word)) score += 2;
+      // Bonus for URL path match
+      if (entry.url.toLowerCase().includes(word)) score += 1;
+    }
+    return { ...entry, score };
+  });
+
+  const matches = scored
+    .filter((e) => e.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, count);
+
+  if (!matches.length) return null;
+
+  return matches.map((m) => ({
+    title: m.title || m.url,
+    url: m.url,
+    snippet: m.snippet,
+  }));
+}
+
 async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip: string): Promise<Response> {
   if (!(await checkRateLimit(kv, ip, "read"))) return json({ error: "rate limited" }, 429);
   if (!query || query.length < 2 || query.length > 500) return json({ error: "query must be 2-500 characters" }, 400);
   const safeCount = Math.min(Math.max(1, count || 5), 20);
 
-  // Edge cache check first (sub-1ms)
+  // Tier 0: Search our OWN cached content first (zero external deps)
+  const localResults = await searchLocal(query, safeCount, kv);
+  if (localResults && localResults.length >= safeCount) {
+    incrementStat(kv, "searches");
+    return json({ query, results: localResults, source: "local" });
+  }
+
+  // Tier 1: Edge cache (sub-1ms)
   const edgeKey = new Request(`https://agentsweb.org/_search/${encodeURIComponent(query.toLowerCase().trim())}/${safeCount}`);
   const edgeCached = await caches.default.match(edgeKey);
   if (edgeCached) {
@@ -951,7 +1023,7 @@ async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip
     return edgeCached;
   }
 
-  // KV search cache (fast, ~50ms)
+  // Tier 2: KV search cache (fast, ~50ms)
   const searchCacheKey = `search:${await hashContent(query.toLowerCase().trim())}`;
   const cachedSearch = await kv.get(searchCacheKey);
   if (cachedSearch) {
@@ -981,9 +1053,17 @@ async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip
   }
 
   if (best) {
-    waitUntilBg(kv.put(searchCacheKey, JSON.stringify(best.results), { expirationTtl: 300 }));
+    // Merge local results (if any) with external results, dedup by URL
+    let merged = best.results;
+    if (localResults?.length) {
+      const externalUrls = new Set(merged.map((r) => r.url));
+      const unique = localResults.filter((r) => !externalUrls.has(r.url));
+      merged = [...unique, ...merged].slice(0, safeCount);
+    }
+
+    waitUntilBg(kv.put(searchCacheKey, JSON.stringify(merged), { expirationTtl: 300 }));
     incrementStat(kv, "searches");
-    const resp = json({ query, results: best.results, source: best.source });
+    const resp = json({ query, results: merged, source: localResults?.length ? `local+${best.source}` : best.source });
 
     // Edge cache search results for 2 min
     const edgeKey = new Request(`https://agentsweb.org/_search/${encodeURIComponent(query)}/${safeCount}`);
@@ -2400,6 +2480,14 @@ export default {
       const normalized = validated.map(normalizeUrlForCache);
       await env.CACHE.put("index:urls", JSON.stringify(normalized));
       return json({ status: "index rebuilt", count: normalized.length });
+    }
+
+    // Admin: rebuild search index from provided entries
+    if (method === "POST" && url.pathname === "/admin/rebuild-search-index" && admin) {
+      const body = await parseBody<{ entries: Array<{ url: string; title: string; snippet: string }> }>(request);
+      if (!body?.entries?.length) return json({ error: "entries array required" }, 400);
+      await env.CACHE.put("index:search", JSON.stringify(body.entries.slice(0, 10_000)));
+      return json({ status: "search index rebuilt", count: body.entries.length });
     }
 
     // Admin: clear all bans for a specific IP
