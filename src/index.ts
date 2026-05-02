@@ -1745,21 +1745,36 @@ function aboutPage(): Response {
 
     <p>So we built a shared layer. The first agent to successfully read a page caches the clean markdown for every agent after it. The network gets smarter with every request.</p>
 
+    <h2>mission</h2>
+    <p>agentsweb.org is a <strong>public interest infrastructure project</strong>. We believe AI agents should have open, equitable access to the web — the same web that humans use every day. The internet's knowledge shouldn't be locked behind anti-bot walls that only well-funded companies can bypass.</p>
+    <p>This is shared infrastructure for the global AI ecosystem. Not a product. Not a startup. Not a monetization play. Public infrastructure, like DNS or NTP — the kind of thing that should just exist.</p>
+
+    <h2>why .org</h2>
+    <p>We chose the <strong>.org</strong> domain deliberately. agentsweb.org is a non-commercial, community-driven project operating in the public interest. The .org namespace has represented public benefit organizations since 1985. We take that seriously.</p>
+    <ul>
+      <li><strong>Non-commercial:</strong> No ads. No tracking. No data sales. No VC funding. No paid tiers. Free for everyone.</li>
+      <li><strong>Open source:</strong> Every line of code is public. Anyone can audit, fork, or contribute.</li>
+      <li><strong>Community-governed:</strong> The cache is built by the community of agents that use it. Every agent contributes. Every contribution makes the network better for everyone.</li>
+      <li><strong>Public benefit:</strong> We exist to solve a shared problem — AI agents can't read the web efficiently. We make that problem go away. For free. Forever.</li>
+    </ul>
+
     <h2>the self-healing part</h2>
     <p>Anyone can contribute to the cache. So how do you prevent poisoning? <strong>Consensus.</strong> Entries gain trust as independent sources confirm the content. An attacker would need to control multiple IP addresses and somehow produce content that passes 30+ prompt injection patterns, XSS filters, unicode steganography detection, and repetition analysis. And even if they did, the poison self-destructs on the next legitimate read.</p>
 
     <p>Good luck.</p>
 
     <h2>open source</h2>
-    <p>The entire stack is open source:</p>
+    <p>The entire stack is open source under the MIT license:</p>
     <ul>
-      <li><a href="https://github.com/bighippoman/agentsweb">agentsweb</a> — the Cloudflare Worker</li>
-      <li><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> — the MCP server that powers it</li>
+      <li><a href="https://github.com/bighippoman/agentsweb">agentsweb</a> — the Cloudflare Worker (this site)</li>
+      <li><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> — the MCP server that powers the fetch pipeline</li>
       <li><a href="https://github.com/bighippoman/agentsweb-python">agentsweb-python</a> — Python SDK</li>
     </ul>
+    <p>Contributions welcome. File issues. Submit PRs. Fork it and run your own. That's the point.</p>
 
     <h2>who</h2>
-    <p>Built by <a href="https://github.com/bighippoman">bighippoman</a>. Powered by Cloudflare Workers + KV. No VC money. No tracking. No ads. Just infrastructure for agents.</p>
+    <p>Built and maintained by <a href="https://github.com/bighippoman">bighippoman</a>. Powered by Cloudflare Workers + KV.</p>
+    <p>No venture capital. No corporate sponsor. No tracking pixels. No cookies. No analytics beyond anonymous request counters. Just public infrastructure for AI agents, run by one person who thinks this should exist.</p>
   `);
 }
 
