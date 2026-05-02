@@ -161,21 +161,15 @@ function validateContent(markdown: string): string | null {
     .replace(/`[^`]+`/g, "")              // inline code
     .replace(/<[^>]+>/g, "");             // HTML tags (from raw HTML content)
 
-  // Scan broadly for injection
-  const scanRegion = stripped.slice(0, 10_000);
+  // Scan FULL document for injection — no blind spots
   for (const p of PROMPT_INJECTION_PATTERNS) {
-    if (p.test(scanRegion)) return "prompt injection detected";
+    if (p.test(stripped)) return "prompt injection detected";
   }
 
-  // Also scan LAST 5KB (injection at end of content)
-  const tail = stripped.slice(-5_000);
-  for (const p of PROMPT_INJECTION_PATTERNS) {
-    if (p.test(tail)) return "prompt injection detected (tail)";
-  }
-
-  // Malicious content check (outside code blocks only)
+  // Malicious content check (outside code blocks only, first 20KB)
+  const maliciousScan = stripped.slice(0, 20_000);
   for (const p of MALICIOUS_CONTENT_PATTERNS) {
-    if (p.test(scanRegion)) return "malicious content detected";
+    if (p.test(maliciousScan)) return "malicious content detected";
   }
 
   // Entropy check: reject if content is mostly base64
@@ -335,10 +329,26 @@ async function isAbuseBanned(kv: KVNamespace, ip: string): Promise<boolean> {
   return strikes >= 5;
 }
 
+function timingSafeEqual(a: string, b: string): boolean {
+  const ua = new TextEncoder().encode(a);
+  const ub = new TextEncoder().encode(b);
+  if (ua.length !== ub.length) {
+    // Compare against dummy to avoid length oracle
+    const dummy = new Uint8Array(ua.length);
+    let diff = 1;
+    for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ dummy[i];
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
+  return diff === 0;
+}
+
 function isAdmin(request: Request, env: Env): boolean {
   if (!env.ADMIN_SECRET) return false;
   const auth = request.headers.get("Authorization") || "";
-  return auth === `Bearer ${env.ADMIN_SECRET}`;
+  const expected = `Bearer ${env.ADMIN_SECRET}`;
+  return timingSafeEqual(auth, expected);
 }
 
 // ============================================================
@@ -460,15 +470,24 @@ function getTtl(trustLevel: number, url: string): number {
 // Stats (via waitUntil to survive after response)
 // ============================================================
 
-let _ctx: ExecutionContext | null = null;
-let _request: Request | null = null;
+// Thread-safe context — captured per-request, never shared
+interface RequestContext {
+  ctx: ExecutionContext;
+  kv: KVNamespace;
+}
+
+let _rc: RequestContext | null = null;
 
 function incrementStat(kv: KVNamespace, stat: string): void {
   const p = kv.get(`stats:${stat}`).then((v) => {
     const n = parseInt(v || "0", 10) + 1;
     return kv.put(`stats:${stat}`, String(n));
   }).catch(() => {});
-  _ctx?.waitUntil(p);
+  _rc?.ctx.waitUntil(p);
+}
+
+function waitUntilBg(p: Promise<unknown>): void {
+  _rc?.ctx.waitUntil(p);
 }
 
 // ============================================================
@@ -481,7 +500,7 @@ async function handleRead(url: string, kv: KVNamespace, ip: string, request: Req
 
   // --- EDGE CACHE: check CF Cache API first (sub-1ms) ---
   const cache = caches.default;
-  const cacheKey = new Request(`https://agentsweb.org/_cache/${encodeURIComponent(url)}`, { method: "GET" });
+  const cacheKey = new Request(`https://agentsweb.org/_cache/${encodeURIComponent(normalizeUrlForCache(url))}`, { method: "GET" });
   const cachedResponse = await cache.match(cacheKey);
   if (cachedResponse) {
     // ETag check against edge-cached response
@@ -511,7 +530,7 @@ async function handleRead(url: string, kv: KVNamespace, ip: string, request: Req
   try {
     entry = JSON.parse(raw);
   } catch {
-    _ctx?.waitUntil(kv.delete(key));
+    waitUntilBg(kv.delete(key));
     return json({ status: "miss" }, 404);
   }
 
@@ -539,7 +558,7 @@ async function handleRead(url: string, kv: KVNamespace, ip: string, request: Req
   cacheHeaders.set("Cache-Control", "public, max-age=300"); // 5 min edge TTL
   cacheHeaders.set("ETag", etag);
   const toCache = new Response(cacheResponse.body, { status: 200, headers: cacheHeaders });
-  _ctx?.waitUntil(cache.put(cacheKey, toCache));
+  waitUntilBg(cache.put(cacheKey, toCache));
 
   return response;
 }
@@ -601,12 +620,15 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
     }
 
     if (entry.content_hash === contentHash) {
-      if (entry.contributors.includes(instanceId)) {
+      // Deduplicate by IP hash (not self-reported instance_id) to prevent trust inflation
+      const ipHash = await hashContent(ip);
+      const contributorKey = ipHash.slice(0, 16);
+      if (entry.contributors.includes(contributorKey)) {
         return json({ status: "duplicate", trust_level: entry.trust_level });
       }
       if (entry.trust_level < 100) entry.trust_level++;
       entry.updated_at = Date.now();
-      entry.contributors.push(instanceId);
+      entry.contributors.push(contributorKey);
       if (entry.contributors.length > 50) {
         entry.contributors = entry.contributors.slice(-50);
       }
@@ -644,14 +666,14 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
   incrementStat(kv, "writes");
 
   // Invalidate edge cache for this URL
-  _ctx?.waitUntil((async () => {
+  waitUntilBg((async () => {
     const c = caches.default;
-    await c.delete(new Request(`https://agentsweb.org/_cache/${encodeURIComponent(url)}`));
-    await c.delete(new Request(`https://agentsweb.org/_raw/${encodeURIComponent(url)}`));
+    await c.delete(new Request(`https://agentsweb.org/_cache/${encodeURIComponent(normalizeUrlForCache(url))}`));
+    await c.delete(new Request(`https://agentsweb.org/_raw/${encodeURIComponent(normalizeUrlForCache(url))}`));
   })());
 
   // Maintain URL index for search
-  _ctx?.waitUntil((async () => {
+  waitUntilBg((async () => {
     const indexRaw = await kv.get("index:urls");
     const urls: string[] = indexRaw ? JSON.parse(indexRaw) : [];
     const normalized = normalizeUrlForCache(url);
@@ -697,12 +719,14 @@ async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string, 
   }
 
   if (entry.content_hash === content_hash) {
-    if (entry.contributors.includes(instanceId)) {
+    const ipHash = await hashContent(ip);
+    const contributorKey = ipHash.slice(0, 16);
+    if (entry.contributors.includes(contributorKey)) {
       return json({ status: "already confirmed", trust_level: entry.trust_level });
     }
     if (entry.trust_level < 100) entry.trust_level++;
     entry.updated_at = Date.now();
-    entry.contributors.push(instanceId);
+    entry.contributors.push(contributorKey);
     if (entry.contributors.length > 50) {
       entry.contributors = entry.contributors.slice(-50);
     }
@@ -721,11 +745,14 @@ async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string, 
 // ============================================================
 
 async function handleBatch(urlParam: string, kv: KVNamespace, ip: string): Promise<Response> {
-  if (!(await checkRateLimit(kv, ip, "read"))) {
-    return json({ error: "rate limited" }, 429);
-  }
+  const urls = urlParam.split(",").map((u) => u.trim()).filter(Boolean).slice(0, 20);
 
-  const urls = urlParam.split(",").map((u) => u.trim()).filter(Boolean).slice(0, 20); // max 20
+  // Each URL in batch costs one rate limit token
+  for (let i = 0; i < urls.length; i++) {
+    if (!(await checkRateLimit(kv, ip, "read"))) {
+      return json({ error: "rate limited", processed: i }, 429);
+    }
+  }
   if (!urls.length) return json({ error: "urls required (comma-separated)" }, 400);
 
   const results: Record<string, unknown> = {};
@@ -768,8 +795,8 @@ async function handleSearch(query: string, kv: KVNamespace, ip: string): Promise
     return json({ error: "rate limited" }, 429);
   }
 
-  if (!query || query.length < 2 || query.length > 200) {
-    return json({ error: "query must be 2-200 characters" }, 400);
+  if (!query || query.length < 4 || query.length > 200) {
+    return json({ error: "query must be 4-200 characters" }, 400);
   }
 
   // KV doesn't support search, so we maintain a URL index
@@ -795,7 +822,7 @@ async function handleRawRead(url: string, kv: KVNamespace, ip: string): Promise<
 
   // Edge cache for raw endpoint too
   const cache = caches.default;
-  const cacheKey = new Request(`https://agentsweb.org/_raw/${encodeURIComponent(url)}`, { method: "GET" });
+  const cacheKey = new Request(`https://agentsweb.org/_raw/${encodeURIComponent(normalizeUrlForCache(url))}`, { method: "GET" });
   const cached = await cache.match(cacheKey);
   if (cached) {
     incrementStat(kv, "hits");
@@ -822,7 +849,7 @@ async function handleRawRead(url: string, kv: KVNamespace, ip: string): Promise<
     headers: {
       "Content-Type": "text/markdown; charset=utf-8",
       "X-Trust-Level": String(entry.trust_level),
-      "X-Source": entry.source,
+      "X-Source": entry.source.replace(/[\r\n]/g, "").slice(0, 64),
       "ETag": `"${entry.content_hash.slice(0, 16)}"`,
       ...securityHeaders(),
     },
@@ -830,7 +857,7 @@ async function handleRawRead(url: string, kv: KVNamespace, ip: string): Promise<
 
   // Edge cache
   const toCache = response.clone();
-  _ctx?.waitUntil(cache.put(cacheKey, new Response(toCache.body, {
+  waitUntilBg(cache.put(cacheKey, new Response(toCache.body, {
     headers: { ...Object.fromEntries(toCache.headers), "Cache-Control": "public, max-age=300" },
   })));
 
@@ -1050,7 +1077,7 @@ async function handleTakedown(request: Request, kv: KVNamespace, ip: string): Pr
   // Delete the cached entry + edge cache
   const key = `cache:${urlHash}`;
   await kv.delete(key);
-  _ctx?.waitUntil((async () => {
+  waitUntilBg((async () => {
     const c = caches.default;
     await c.delete(new Request(`https://agentsweb.org/_cache/${encodeURIComponent(body.url)}`));
     await c.delete(new Request(`https://agentsweb.org/_raw/${encodeURIComponent(body.url)}`));
@@ -1226,7 +1253,7 @@ function termsPage(): Response {
 export default {
   // Cache warming cron — refreshes entries approaching expiry
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    _ctx = ctx;
+    _rc = { ctx, kv: env.CACHE };
     const kv = env.CACHE;
 
     // Get URL index
@@ -1258,6 +1285,10 @@ export default {
           const markdown = await resp.text();
           if (markdown.length < 200) continue;
 
+          // Validate fetched content through same gates as user writes
+          const rejection = validateContent(markdown);
+          if (rejection) continue;
+
           const contentHash = await hashContent(markdown);
           entry.markdown = markdown;
           entry.content_hash = contentHash;
@@ -1273,8 +1304,7 @@ export default {
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    _ctx = ctx;
-    _request = request;
+    _rc = { ctx, kv: env.CACHE };
     const admin = isAdmin(request, env);
     const method = request.method;
     if (!["GET", "PUT", "POST", "OPTIONS", "HEAD"].includes(method)) {
@@ -1309,7 +1339,8 @@ export default {
     if (method === "POST" && url.pathname === "/admin/rebuild-index" && admin) {
       const body = await parseBody<{ urls: string[] }>(request);
       if (!body?.urls?.length) return json({ error: "urls array required" }, 400);
-      const normalized = body.urls.map(normalizeUrlForCache);
+      const validated = body.urls.filter((u) => !validateUrl(u));
+      const normalized = validated.map(normalizeUrlForCache);
       await env.CACHE.put("index:urls", JSON.stringify(normalized));
       return json({ status: "index rebuilt", count: normalized.length });
     }
@@ -1359,10 +1390,12 @@ export default {
       }
 
       if (method === "POST" && url.pathname === "/takedown") {
+        if (!admin) return json({ error: "admin authentication required — email dmca@agentsweb.org for takedowns" }, 403);
         return await handleTakedown(request, env.CACHE, ip);
       }
 
       if (method === "POST" && url.pathname === "/opt-out") {
+        if (!admin) return json({ error: "admin authentication required — email dmca@agentsweb.org for opt-outs" }, 403);
         return await handleOptOut(request, env.CACHE, ip);
       }
     } catch {
