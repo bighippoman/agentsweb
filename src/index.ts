@@ -1055,88 +1055,79 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
   <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace; background: #000; color: #33ff33; min-height: 100vh; }
-    ::selection { background: #33ff33; color: #000; }
+    body { font-family: 'JetBrains Mono', 'SF Mono', monospace; background: #0c0c0c; color: #d4d4d4; min-height: 100vh; }
+    ::selection { background: #f0a050; color: #000; }
     .wrap { max-width: 760px; margin: 0 auto; padding: 3rem 2rem 2rem; }
 
-    /* Scanline overlay */
-    body::after { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,255,0,0.03) 2px, rgba(0,255,0,0.03) 4px); pointer-events: none; z-index: 999; }
+    /* Subtle noise texture */
+    body::after { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(255,255,255,0.008) 3px, rgba(255,255,255,0.008) 4px); pointer-events: none; z-index: 999; }
 
-    .logo { font-size: 2.2rem; font-weight: 800; color: #33ff33; margin-bottom: 0.25rem; }
-    .logo span { color: #0a0; }
-    .tagline { color: #1a9a1a; font-size: 1rem; margin-bottom: 2rem; line-height: 1.6; }
-    .tagline em { color: #33ff33; font-style: normal; }
+    .logo { font-size: 2.2rem; font-weight: 800; color: #f0a050; margin-bottom: 0.25rem; }
+    .logo span { color: #a06830; }
+    .tagline { color: #888; font-size: 0.95rem; margin-bottom: 2rem; line-height: 1.6; }
+    .tagline em { color: #f0a050; font-style: normal; }
 
-    /* Blinking cursor */
-    .cursor { display: inline-block; width: 10px; height: 1.1em; background: #33ff33; animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 2px; }
+    .cursor { display: inline-block; width: 10px; height: 1.1em; background: #f0a050; animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 2px; }
     @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
-    /* Before/After */
     .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 2.5rem; }
-    .compare-box { border: 1px solid #1a1a1a; border-radius: 6px; padding: 1rem; font-size: 0.75rem; line-height: 1.5; }
-    .compare-bad { border-color: #330000; background: #0a0000; color: #ff4444; }
-    .compare-good { border-color: #003300; background: #000a00; color: #33ff33; }
+    .compare-box { border: 1px solid #222; border-radius: 6px; padding: 1rem; font-size: 0.75rem; line-height: 1.5; }
+    .compare-bad { border-color: #3a1515; background: #110808; color: #e05555; }
+    .compare-good { border-color: #2a2a15; background: #0e0e08; color: #d4b070; }
     .compare-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; display: block; }
-    .compare-bad .compare-label { color: #ff6666; }
-    .compare-good .compare-label { color: #66ff66; }
+    .compare-bad .compare-label { color: #ff7777; }
+    .compare-good .compare-label { color: #f0a050; }
 
-    /* Stats */
     .stats { display: flex; gap: 1rem; margin-bottom: 2.5rem; }
-    .stat { flex: 1; border: 1px solid #1a3a1a; border-radius: 6px; padding: 1rem; text-align: center; }
-    .stat-n { font-size: 1.6rem; font-weight: 700; color: #33ff33; }
-    .stat-l { font-size: 0.65rem; color: #1a7a1a; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 0.2rem; }
+    .stat { flex: 1; border: 1px solid #2a2218; border-radius: 6px; padding: 1rem; text-align: center; }
+    .stat-n { font-size: 1.6rem; font-weight: 700; color: #f0a050; }
+    .stat-l { font-size: 0.65rem; color: #7a6a50; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 0.2rem; }
 
-    /* Terminal block */
-    .term { background: #0a0a0a; border: 1px solid #1a3a1a; border-radius: 8px; margin-bottom: 2rem; overflow: hidden; }
-    .term-bar { background: #0f1a0f; padding: 0.4rem 0.8rem; display: flex; gap: 0.4rem; align-items: center; }
+    .term { background: #111; border: 1px solid #2a2218; border-radius: 8px; margin-bottom: 2rem; overflow: hidden; }
+    .term-bar { background: #1a1510; padding: 0.4rem 0.8rem; display: flex; gap: 0.4rem; align-items: center; }
     .term-dot { width: 8px; height: 8px; border-radius: 50%; }
     .term-dot:nth-child(1) { background: #ff5f57; }
     .term-dot:nth-child(2) { background: #febc2e; }
     .term-dot:nth-child(3) { background: #28c840; }
-    .term-title { margin-left: 0.5rem; font-size: 0.65rem; color: #1a7a1a; }
+    .term-title { margin-left: 0.5rem; font-size: 0.65rem; color: #7a6a50; }
     .term-body { padding: 1rem; font-size: 0.8rem; line-height: 1.6; white-space: pre-wrap; overflow-x: auto; max-height: 400px; overflow-y: auto; }
-    .term-body .prompt { color: #1a7a1a; }
-    .term-body .cmd { color: #33ff33; }
-    .term-body .out { color: #0a8a0a; }
-    .term-body .val { color: #66ff66; }
+    .term-body .prompt { color: #7a6a50; }
+    .term-body .cmd { color: #f0a050; }
+    .term-body .out { color: #8a7a60; }
+    .term-body .val { color: #f0c070; }
 
-    /* Section */
-    h2 { font-size: 0.7rem; font-weight: 700; color: #1a7a1a; text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 0.75rem; }
+    h2 { font-size: 0.7rem; font-weight: 700; color: #7a6a50; text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 0.75rem; }
     .section { margin-bottom: 2.5rem; }
-    .section p { color: #1a8a1a; font-size: 0.85rem; line-height: 1.7; margin-bottom: 0.5rem; }
-    .section strong { color: #33ff33; }
+    .section p { color: #999; font-size: 0.85rem; line-height: 1.7; margin-bottom: 0.5rem; }
+    .section strong { color: #f0a050; }
 
-    /* Endpoints */
-    .ep { border: 1px solid #0a2a0a; padding: 0.5rem 0.75rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; }
-    .ep:hover { border-color: #33ff33; background: #001a00; }
-    .tag { color: #000; background: #33ff33; padding: 1px 6px; font-size: 0.6rem; font-weight: 700; }
-    .ep-u { color: #33ff33; }
-    .ep-d { color: #1a5a1a; margin-left: auto; font-size: 0.7rem; }
+    .ep { border: 1px solid #1a1a1a; padding: 0.5rem 0.75rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; transition: border-color 0.15s; }
+    .ep:hover { border-color: #f0a050; background: #1a1508; }
+    .tag { color: #000; background: #f0a050; padding: 1px 6px; font-size: 0.6rem; font-weight: 700; }
+    .ep-u { color: #d4b070; }
+    .ep-d { color: #5a5040; margin-left: auto; font-size: 0.7rem; }
 
-    /* Security */
     .sec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; }
-    .sec-item { border: 1px solid #0a2a0a; padding: 0.4rem 0.6rem; font-size: 0.7rem; color: #1a7a1a; }
+    .sec-item { border: 1px solid #1a1a1a; padding: 0.4rem 0.6rem; font-size: 0.7rem; color: #7a7060; }
 
-    /* SDKs */
-    .sdk { border: 1px solid #0a2a0a; padding: 0.5rem 0.75rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; }
-    .sdk-name { color: #33ff33; min-width: 50px; }
-    .sdk-cmd { color: #0a8a0a; }
+    .sdk { border: 1px solid #1a1a1a; padding: 0.5rem 0.75rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; }
+    .sdk-name { color: #f0a050; min-width: 50px; }
+    .sdk-cmd { color: #8a7a60; }
 
-    /* Footer */
-    .footer { border-top: 1px solid #0a2a0a; padding-top: 1.5rem; margin-top: 1rem; font-size: 0.7rem; color: #0a5a0a; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
-    a { color: #33ff33; text-decoration: none; }
+    .footer { border-top: 1px solid #1a1a1a; padding-top: 1.5rem; margin-top: 1rem; font-size: 0.7rem; color: #4a4030; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
+    .footer a { color: #a08050; }
+    a { color: #f0a050; text-decoration: none; }
     a:hover { text-decoration: underline; }
 
-    /* Try it */
-    .try-input { width: 100%; background: #000; border: 1px solid #1a3a1a; padding: 0.6rem 0.8rem; color: #33ff33; font-family: inherit; font-size: 0.8rem; outline: none; margin-bottom: 0.5rem; }
-    .try-input:focus { border-color: #33ff33; }
-    .try-btn { background: #33ff33; color: #000; border: none; padding: 0.5rem 1.2rem; cursor: pointer; font-family: inherit; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
-    .try-btn:hover { background: #66ff66; }
-    .try-btn:disabled { background: #1a3a1a; color: #0a2a0a; }
+    .try-input { width: 100%; background: #111; border: 1px solid #2a2218; padding: 0.6rem 0.8rem; color: #f0a050; font-family: inherit; font-size: 0.8rem; outline: none; margin-bottom: 0.5rem; border-radius: 4px; }
+    .try-input:focus { border-color: #f0a050; }
+    .try-btn { background: #f0a050; color: #000; border: none; padding: 0.5rem 1.2rem; cursor: pointer; font-family: inherit; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 4px; }
+    .try-btn:hover { background: #f0c070; }
+    .try-btn:disabled { background: #3a2a18; color: #5a4a30; }
 
-    /* Built for */
-    .built-for { color: #0a5a0a; font-size: 0.7rem; line-height: 1.8; }
-    .built-for span { border: 1px solid #0a2a0a; padding: 2px 8px; margin: 2px; display: inline-block; }
+    .built-for { color: #5a5040; font-size: 0.7rem; line-height: 1.8; }
+    .built-for span { border: 1px solid #1a1a1a; padding: 2px 8px; margin: 2px; display: inline-block; }
+    .built-for span:hover { border-color: #f0a050; color: #f0a050; }
 
     @media (max-width: 600px) { .stats { flex-direction: column; } .compare { grid-template-columns: 1fr; } .sec-grid { grid-template-columns: 1fr; } .ep { flex-wrap: wrap; } .ep-d { margin-left: 0; } }
   </style>
@@ -1287,7 +1278,7 @@ By Mark Gurman. Clean markdown. Done.
     </div>
 
     <div class="footer">
-      <span><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> · <a href="https://github.com/bighippoman/agentsweb">source</a> · <a href="/dmca">dmca</a> · <a href="/terms">terms</a></span>
+      <span><a href="/docs">docs</a> · <a href="/security">security</a> · <a href="/about">about</a> · <a href="https://github.com/bighippoman/agentsweb">source</a> · <a href="/dmca">dmca</a> · <a href="/terms">terms</a></span>
       <span>${total.toLocaleString()} ops served</span>
     </div>
 
@@ -1389,129 +1380,216 @@ async function handleOptOut(request: Request, kv: KVNamespace, ip: string): Prom
 }
 
 // ============================================================
-// Legal pages
+// Page template + marketing/legal pages
 // ============================================================
 
+const PAGE_STYLE = `@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'JetBrains Mono',monospace;background:#0c0c0c;color:#d4d4d4;min-height:100vh}
+body::after{content:'';position:fixed;top:0;left:0;width:100%;height:100%;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(255,255,255,0.008) 3px,rgba(255,255,255,0.008) 4px);pointer-events:none;z-index:999}
+.page{max-width:720px;margin:0 auto;padding:3rem 2rem}
+h1{font-size:1.6rem;font-weight:700;color:#f0a050;margin-bottom:1.5rem}
+h2{font-size:0.75rem;font-weight:700;color:#7a6a50;text-transform:uppercase;letter-spacing:0.15em;margin:2rem 0 0.75rem}
+p,li{color:#999;line-height:1.7;margin-bottom:0.75rem;font-size:0.85rem}
+ul{padding-left:1.5rem}
+strong{color:#f0a050}
+code{background:#111;border:1px solid #2a2218;padding:0.1rem 0.4rem;font-size:0.8rem;color:#f0a050}
+a{color:#f0a050;text-decoration:none}a:hover{text-decoration:underline}
+.back{margin-top:2rem;font-size:0.8rem}
+.nav{font-size:0.7rem;color:#5a5040;margin-bottom:2rem}`;
+
+const PAGE_HEADERS = {
+  "Content-Type": "text/html;charset=utf-8",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+  "Referrer-Policy": "no-referrer",
+};
+
+function makePage(title: string, body: string): Response {
+  return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — agentsweb.org</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold'>a</text></svg>"><style>${PAGE_STYLE}</style></head><body><div class="page"><div class="nav"><a href="/">agentsweb.org</a> / ${title.toLowerCase()}</div>${body}<p class="back"><a href="/">&lt; back</a></p></div></body></html>`, { headers: PAGE_HEADERS });
+}
+
 function dmcaPage(): Response {
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DMCA Policy - agentsweb.org</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
-    .page { max-width: 720px; margin: 0 auto; padding: 4rem 2rem; }
-    h1 { font-size: 1.8rem; font-weight: 700; color: #fff; margin-bottom: 1.5rem; }
-    h2 { font-size: 1.1rem; color: #fff; margin: 1.5rem 0 0.75rem; }
-    p, li { color: #999; line-height: 1.7; margin-bottom: 0.75rem; }
-    ul { padding-left: 1.5rem; }
-    code { background: #161616; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.9rem; color: #ccc; }
-    a { color: #60a5fa; text-decoration: none; }
-    .back { margin-top: 2rem; }
-  </style>
-</head>
-<body>
-  <div class="page">
-    <h1>DMCA &amp; Takedown Policy</h1>
+  return makePage("DMCA", `
+    <h1>&gt; dmca &amp; takedown policy</h1>
 
-    <h2>What agentsweb.org is</h2>
-    <p>agentsweb.org is an automated system cache operating under DMCA 512(b) (system caching safe harbor). It temporarily caches markdown representations of publicly accessible web pages to reduce redundant network requests by AI agents. All cached content is ephemeral — entries expire automatically based on TTL policies.</p>
+    <h2>what this is</h2>
+    <p>agentsweb.org is an automated system cache operating under <strong>DMCA 512(b)</strong> (system caching safe harbor). It temporarily caches markdown representations of publicly accessible web pages. All cached content is ephemeral — entries expire automatically.</p>
 
-    <h2>Automated cache, not a hosting service</h2>
-    <p>We do not host, curate, or editorially select content. Content enters the cache only through automated processes initiated by third-party AI agent instances. We do not modify, edit, or control what content is cached beyond automated quality and security filtering.</p>
+    <h2>not a hosting service</h2>
+    <p>We do not host, curate, or editorially select content. Content enters the cache only through automated processes initiated by third-party AI agent instances.</p>
 
-    <h2>Transformative purpose</h2>
-    <p>Cached content is stored as markdown — a structural transformation from the original HTML — for the purpose of machine processing by AI agents. This is a fundamentally different use from the original publication purpose, analogous to how search engine caches transform and index content for information retrieval.</p>
+    <h2>transformative purpose</h2>
+    <p>Cached content is stored as markdown — a structural transformation from HTML — for machine processing by AI agents. Different format, different purpose, different audience.</p>
 
-    <h2>Content removal</h2>
-    <p>Content owners can remove any cached content instantly:</p>
-    <ul>
-      <li><strong>Single URL takedown:</strong> <code>POST /takedown</code> with <code>{"url": "...", "email": "..."}</code></li>
-      <li><strong>Entire domain opt-out:</strong> <code>POST /opt-out</code> with <code>{"domain": "...", "email": "..."}</code></li>
-    </ul>
-    <p>Takedowns are processed immediately and automatically. No human review delay. The URL is permanently flagged and cannot be re-cached.</p>
-
-    <h2>DMCA notices</h2>
-    <p>For formal DMCA takedown notices, email <strong>dmca@agentsweb.org</strong> with:</p>
-    <ul>
-      <li>The URL(s) of the cached content</li>
-      <li>The original URL(s) of your copyrighted work</li>
-      <li>A statement of good faith belief that the use is not authorized</li>
-      <li>Your contact information</li>
-    </ul>
-    <p>We respond to all valid DMCA notices within 24 hours.</p>
+    <h2>content removal</h2>
+    <p>Email <strong>dmca@agentsweb.org</strong> with the URL(s) and proof of ownership. We respond within 24 hours. Takedowns are permanent — the URL is flagged and cannot be re-cached.</p>
 
     <h2>robots.txt</h2>
-    <p>Website owners can prevent their content from being cached by adding <code>User-agent: agentsweb</code> with <code>Disallow: /</code> to their robots.txt file, or by using the domain opt-out API.</p>
-
-    <p class="back"><a href="/">Back to agentsweb.org</a></p>
-  </div>
-</body>
-</html>`;
-  return new Response(html, {
-    headers: {
-      "Content-Type": "text/html;charset=utf-8",
-      "X-Content-Type-Options": "nosniff",
-      "X-Frame-Options": "DENY",
-      "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
-    },
-  });
+    <p>Add <code>User-agent: agentsweb</code> with <code>Disallow: /</code> to opt out of caching.</p>
+  `);
 }
 
 function termsPage(): Response {
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Terms of Service - agentsweb.org</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
-    .page { max-width: 720px; margin: 0 auto; padding: 4rem 2rem; }
-    h1 { font-size: 1.8rem; font-weight: 700; color: #fff; margin-bottom: 1.5rem; }
-    h2 { font-size: 1.1rem; color: #fff; margin: 1.5rem 0 0.75rem; }
-    p { color: #999; line-height: 1.7; margin-bottom: 0.75rem; }
-    a { color: #60a5fa; text-decoration: none; }
-    .back { margin-top: 2rem; }
-  </style>
-</head>
-<body>
-  <div class="page">
-    <h1>Terms of Service</h1>
+  return makePage("Terms", `
+    <h1>&gt; terms of service</h1>
 
-    <h2>Service description</h2>
-    <p>agentsweb.org provides an automated system cache for AI agent infrastructure. It stores temporary markdown representations of publicly accessible web pages.</p>
+    <h2>the service</h2>
+    <p>agentsweb.org provides an automated cache and search API for AI agents. It stores temporary markdown representations of publicly accessible web pages.</p>
 
-    <h2>No warranty</h2>
-    <p>The service is provided "as is" without warranty. Cached content may be incomplete, outdated, or incorrect. Content accuracy depends on third-party submissions and is not guaranteed.</p>
+    <h2>no warranty</h2>
+    <p>Provided "as is." Cached content may be incomplete, outdated, or incorrect. We don't guarantee accuracy.</p>
 
-    <h2>Acceptable use</h2>
-    <p>You may not: submit content containing malware, prompt injections, or other malicious payloads; attempt to poison the cache; use the service for DDoS amplification; exceed rate limits through automated means.</p>
+    <h2>don't be evil</h2>
+    <p>You may not: submit malicious content, attempt cache poisoning, use us for DDoS amplification, or exceed rate limits. We auto-ban abusers.</p>
 
-    <h2>Content responsibility</h2>
-    <p>Contributors are responsible for ensuring they have the right to submit content. agentsweb.org operates as a passive cache and does not verify the copyright status of cached content.</p>
+    <h2>content removal</h2>
+    <p>Content owners: see <a href="/dmca">dmca policy</a>.</p>
+  `);
+}
 
-    <h2>Abuse</h2>
-    <p>IPs that repeatedly submit rejected content are automatically banned. Persistent abuse may result in permanent blocking.</p>
+function docsPage(): Response {
+  return makePage("Docs", `
+    <h1>&gt; api documentation</h1>
 
-    <h2>Content removal</h2>
-    <p>Content owners may request immediate removal via the <a href="/dmca">DMCA &amp; Takedown</a> page.</p>
+    <h2>search the web</h2>
+    <p><code>GET /web?q={query}&count={1-20}</code></p>
+    <p>Returns search results from the open web. No API key needed.</p>
 
-    <p class="back"><a href="/">Back to agentsweb.org</a></p>
-  </div>
-</body>
-</html>`;
-  return new Response(html, {
-    headers: {
-      "Content-Type": "text/html;charset=utf-8",
-      "X-Content-Type-Options": "nosniff",
-      "X-Frame-Options": "DENY",
-      "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
-    },
-  });
+    <h2>research (search + fetch + cache)</h2>
+    <p><code>GET /research?q={query}&count={1-5}</code></p>
+    <p>One call does everything: searches the web, fetches the top results, converts to markdown, caches them, and returns the content. The nuclear option.</p>
+
+    <h2>fetch any url</h2>
+    <p><code>GET /fetch?url={url}</code></p>
+    <p>Give it a URL, get clean markdown. If it's cached, instant. If not, fetches it live, caches it, and returns it. You never need to worry about whether something is cached.</p>
+
+    <h2>read from cache</h2>
+    <p><code>GET /?url={url}</code></p>
+    <p>Cache-only read. Returns 404 if not cached. Use this when you want speed and don't want to trigger a live fetch.</p>
+
+    <h2>raw markdown</h2>
+    <p><code>GET /raw?url={url}</code></p>
+    <p>Returns plain <code>text/markdown</code> with zero JSON overhead. Trust level and source in response headers. Smallest possible response.</p>
+
+    <h2>batch read</h2>
+    <p><code>GET /batch?urls={url1},{url2},{url3}</code></p>
+    <p>Up to 20 URLs in one request. Each URL is resolved from cache independently.</p>
+
+    <h2>contribute content</h2>
+    <p><code>PUT /</code> with JSON body: <code>{"url":"...","markdown":"...","source":"..."}</code></p>
+    <p>Submit cached content. Must pass all security gates. Content starts at trust_level 1.</p>
+
+    <h2>confirm entry</h2>
+    <p><code>POST /confirm</code> with JSON body: <code>{"url":"...","content_hash":"..."}</code></p>
+    <p>Confirm a cached entry matches your local fetch. Increments trust_level.</p>
+
+    <h2>trust levels</h2>
+    <p>Every cached entry has a trust level (1-100). Trust increases when independent sources confirm the content matches. Higher trust = longer TTL = more likely to be served from edge cache.</p>
+    <ul>
+      <li><strong>1:</strong> Single source, unverified. Served but marked as low trust.</li>
+      <li><strong>2+:</strong> Multiple independent sources agree. Protected from overwrites.</li>
+      <li><strong>5+:</strong> Battle-tested. Long TTL, edge-cached.</li>
+    </ul>
+
+    <h2>self-healing</h2>
+    <p>When an agent reads a cached entry, it can verify the content by fetching locally. If the content matches, it confirms (trust++). If it doesn't match, the entry gets corrected. Poisoned content self-destructs on the next legitimate read.</p>
+
+    <h2>rate limits</h2>
+    <ul>
+      <li>Reads: 600/min per IP</li>
+      <li>Writes: 10/min per IP</li>
+      <li>Confirms: 60/min per IP</li>
+      <li>5 rejected submissions = 1hr auto-ban</li>
+    </ul>
+
+    <h2>response format</h2>
+    <p>All JSON responses include: <code>url</code>, <code>markdown</code>, <code>trust_level</code>, <code>source</code>, <code>age_seconds</code>. When content is approaching TTL expiry, a <code>stale: true</code> field is added.</p>
+  `);
+}
+
+function securityPage(): Response {
+  return makePage("Security", `
+    <h1>&gt; security architecture</h1>
+
+    <p>agentsweb.org is a high-value target. It serves content directly to AI agents, making cache poisoning and prompt injection the primary threats. Here's how we defend against them.</p>
+
+    <h2>content gates (write-time)</h2>
+    <p>Every submission passes through multiple validation layers before being stored:</p>
+    <ul>
+      <li><strong>Prompt injection scan:</strong> 30+ regex patterns checking the full document (no blind spots). Covers direct instruction overrides, role manipulation, system prompt extraction, template tokens, jailbreak patterns, and code execution attempts.</li>
+      <li><strong>Malicious content scan:</strong> Script tags, event handlers, iframes, document.cookie access — all detected outside code blocks (docs with code examples are safe).</li>
+      <li><strong>Captcha / login wall detection:</strong> Cloudflare challenges, reCAPTCHA, "sign in to continue" — all rejected.</li>
+      <li><strong>Unicode steganography:</strong> Invisible zero-width characters used to hide payloads are detected.</li>
+      <li><strong>Repetition attack:</strong> Content with >50% identical lines (padding attacks) is rejected.</li>
+      <li><strong>Base64 smuggling:</strong> Content with >40% base64-encoded blocks is rejected.</li>
+      <li><strong>Length bounds:</strong> Minimum 200 chars, maximum 512KB.</li>
+    </ul>
+
+    <h2>url validation (ssrf prevention)</h2>
+    <ul>
+      <li>Only http/https URLs accepted</li>
+      <li>Private IPs blocked (RFC1918, link-local, loopback, IPv6 ULA)</li>
+      <li>Cloud metadata endpoints blocked (169.254.169.254, metadata.google)</li>
+      <li>Credentials in URLs rejected</li>
+      <li>Non-standard ports rejected (only 80/443)</li>
+      <li>Double-encoding bypass prevention</li>
+      <li>Null byte injection blocked</li>
+    </ul>
+
+    <h2>trust consensus</h2>
+    <p>Entries start at trust_level 1. Trust only increases when a <strong>different IP address</strong> confirms the content (not self-reported instance IDs — those can be spoofed). At trust_level 2+, the entry is protected from overwrites. An attacker would need to control multiple IP addresses to inflate trust.</p>
+
+    <h2>self-healing</h2>
+    <p>Every read is a potential verification. When an agent fetches content from the cache, it can verify locally. If the cached content is wrong, the correct version replaces it. Poisoned entries survive exactly one read.</p>
+
+    <h2>abuse prevention</h2>
+    <ul>
+      <li>Per-IP rate limiting (600 reads/min, 10 writes/min)</li>
+      <li>Auto-ban after 5 rejected submissions (1 hour cooldown)</li>
+      <li>Admin auth uses constant-time comparison (timing attack resistant)</li>
+      <li>DMCA takedowns and domain opt-outs require admin authentication</li>
+    </ul>
+
+    <h2>infrastructure</h2>
+    <ul>
+      <li>Cloudflare Workers (edge compute, no origin server)</li>
+      <li>Cloudflare KV (globally replicated key-value store)</li>
+      <li>Edge cache with 5-minute TTL (sub-1ms repeat reads)</li>
+      <li>HSTS preload, CSP, COEP, COOP, X-Frame-Options DENY</li>
+      <li>No cookies, no sessions, no state beyond KV</li>
+    </ul>
+  `);
+}
+
+function aboutPage(): Response {
+  return makePage("About", `
+    <h1>&gt; about</h1>
+
+    <p>Every AI agent on earth independently fetches the same web pages. Same 403s. Same captchas. Same raw HTML. Over and over. Millions of times a day.</p>
+
+    <p><strong>That's insane.</strong></p>
+
+    <p>agentsweb.org exists because the web was not built for AI. Pages are HTML, not markdown. Servers block bots. Captchas assume you have eyes. Paywalls assume you have a credit card.</p>
+
+    <p>So we built a shared layer. The first agent to successfully read a page caches the clean markdown for every agent after it. The network gets smarter with every request.</p>
+
+    <h2>the self-healing part</h2>
+    <p>Anyone can contribute to the cache. So how do you prevent poisoning? <strong>Consensus.</strong> Entries gain trust as independent sources confirm the content. An attacker would need to control multiple IP addresses and somehow produce content that passes 30+ prompt injection patterns, XSS filters, unicode steganography detection, and repetition analysis. And even if they did, the poison self-destructs on the next legitimate read.</p>
+
+    <p>Good luck.</p>
+
+    <h2>open source</h2>
+    <p>The entire stack is open source:</p>
+    <ul>
+      <li><a href="https://github.com/bighippoman/agentsweb">agentsweb</a> — the Cloudflare Worker</li>
+      <li><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> — the MCP server that powers it</li>
+      <li><a href="https://github.com/bighippoman/agentsweb-python">agentsweb-python</a> — Python SDK</li>
+    </ul>
+
+    <h2>who</h2>
+    <p>Built by <a href="https://github.com/bighippoman">bighippoman</a>. Powered by Cloudflare Workers + KV. No VC money. No tracking. No ads. Just infrastructure for agents.</p>
+  `);
 }
 
 // ============================================================
@@ -1688,6 +1766,9 @@ export default {
     // Static pages
     if (method === "GET" && url.pathname === "/dmca") return dmcaPage();
     if (method === "GET" && url.pathname === "/terms") return termsPage();
+    if (method === "GET" && url.pathname === "/docs") return docsPage();
+    if (method === "GET" && url.pathname === "/security") return securityPage();
+    if (method === "GET" && url.pathname === "/about") return aboutPage();
 
     return json({ error: "not found" }, 404);
   },
