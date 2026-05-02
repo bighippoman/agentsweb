@@ -543,17 +543,53 @@ function truncateToTokens(markdown: string, maxTokens: number): string {
 function cleanForAgent(markdown: string): string {
   let md = markdown;
 
-  // Strip share/social lines
-  md = md.replace(/^.*?(share|tweet|follow us|subscribe|newsletter|sign up|cookie|privacy policy|terms of service|advertisement|sponsored).*$/gim, "");
+  // Strip Jina metadata headers (Title:, URL Source:, Published Time:, Markdown Content:)
+  md = md.replace(/^Title:\s*.+\n/m, "");
+  md = md.replace(/^URL Source:\s*.+\n/m, "");
+  md = md.replace(/^Published Time:\s*.+\n/m, "");
+  md = md.replace(/^Markdown Content:\s*\n/m, "");
+  md = md.replace(/^Warning:.*\n/gm, "");
 
-  // Strip "Related articles" sections
-  md = md.replace(/^#{1,3}\s*(related|recommended|you may also|more from|trending|popular|see also).*$[\s\S]*?(?=^#{1,3}\s|\Z)/gim, "");
+  // Strip navigation menu blocks — runs of 3+ consecutive short link lines
+  const lines = md.split("\n");
+  const cleaned: string[] = [];
+  let navRun = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isNavLink = /^\*?\s*\[.{1,50}\]\(.*\)\s*$/.test(trimmed) && trimmed.length < 100;
+    if (isNavLink) {
+      navRun++;
+    } else {
+      if (navRun >= 4) {
+        // Was a nav block — skip all the accumulated links
+        // Don't add them to cleaned
+      } else {
+        // Not a nav block — add any accumulated links back
+        // (they were real content links)
+      }
+      navRun = 0;
+      cleaned.push(line);
+    }
+  }
+  md = cleaned.join("\n");
 
-  // Strip empty link lists (nav remnants)
-  md = md.replace(/^(\s*\*\s*\n){3,}/gm, "");
+  // Strip share/social/cookie/terms lines
+  md = md.replace(/^.*?(share|tweet|follow us|subscribe to|newsletter|sign up for|cookie|privacy policy|terms of service|advertisement|sponsored|skip to content).*$/gim, "");
+
+  // Strip "Related articles" / "Navigation" sections
+  md = md.replace(/^#{1,3}\s*(related|recommended|you may also|more from|trending|popular|see also|navigation menu|toggle navigation).*$[\s\S]*?(?=^#{1,3}\s[^#]|\Z)/gim, "");
+
+  // Strip GitHub-specific nav cruft
+  md = md.replace(/^.*?(Sign in|Appearance settings|Platform|AI CODE CREATION|DEVELOPER WORKFLOWS|APPLICATION SECURITY|Toggle navigation).*$/gm, "");
+
+  // Strip image-only lines (usually icons/logos)
+  md = md.replace(/^\s*!\[.*?\]\(.*?\)\s*$/gm, "");
+
+  // Strip "You can't perform that action" GitHub messages
+  md = md.replace(/^.*?You can't perform that action.*$/gm, "");
 
   // Collapse excessive blank lines
-  md = md.replace(/\n{4,}/g, "\n\n");
+  md = md.replace(/\n{3,}/g, "\n\n");
 
   return md.trim();
 }
@@ -833,12 +869,15 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
     // Content search index — extract title + snippet for local search
     const titleMatch = markdown.match(/^#\s+(.+)/m);
     const title = titleMatch ? titleMatch[1].slice(0, 200) : "";
-    const snippet = markdown
-      .replace(/^#.+$/gm, "") // strip headings
-      .replace(/\[.*?\]\(.*?\)/g, "") // strip links
-      .replace(/[*_`]/g, "") // strip formatting
+    // Extract ALL headings + first 1000 chars of body for search indexing
+    const headings = (markdown.match(/^#{1,6}\s+.+$/gm) || []).join(" ");
+    const body = markdown
+      .replace(/^#.+$/gm, "")
+      .replace(/\[.*?\]\(.*?\)/g, "")
+      .replace(/[*_`]/g, "")
       .trim()
-      .slice(0, 300);
+      .slice(0, 1000);
+    const snippet = `${headings} ${body}`.slice(0, 1500);
 
     const searchEntry = { url: normalized, title, snippet };
     const searchIndexRaw = await kv.get("index:search");
@@ -1068,18 +1107,24 @@ async function searchLocal(query: string, count: number, kv: KVNamespace): Promi
   const queryWords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
   if (!queryWords.length) return null;
 
-  // Score each entry by how many query words match in title + snippet + url
+  // Score each entry — require ALL query words to appear somewhere
   const scored = searchIndex.map((entry) => {
     const text = `${entry.title} ${entry.snippet} ${entry.url}`.toLowerCase();
     let score = 0;
+    let allMatch = true;
     for (const word of queryWords) {
-      if (text.includes(word)) score++;
-      // Bonus for title match
-      if (entry.title.toLowerCase().includes(word)) score += 2;
-      // Bonus for URL path match
-      if (entry.url.toLowerCase().includes(word)) score += 1;
+      if (text.includes(word)) {
+        score++;
+        if (entry.title.toLowerCase().includes(word)) score += 3;
+        if (entry.url.toLowerCase().includes(word)) score += 2;
+      } else {
+        allMatch = false;
+      }
     }
-    return { ...entry, score };
+    // Only include if ALL query words found (or at least 2/3 for longer queries)
+    const minMatches = queryWords.length <= 2 ? queryWords.length : Math.ceil(queryWords.length * 0.66);
+    const wordMatches = queryWords.filter((w) => text.includes(w)).length;
+    return { ...entry, score: wordMatches >= minMatches ? score : 0 };
   });
 
   const matches = scored
@@ -1194,7 +1239,7 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
     if (raw) {
       try {
         const entry: CacheEntry = JSON.parse(raw);
-        pages.push({ ...result, markdown: entry.markdown, source: `cache (trust:${entry.trust_level})` });
+        pages.push({ ...result, markdown: cleanForAgent(entry.markdown), source: `cache (trust:${entry.trust_level})` });
         incrementStat(kv, "hits");
         return;
       } catch {}
@@ -1211,7 +1256,7 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
     const entry: CacheEntry = { url: result.url, markdown: fetched.markdown, trust_level: 1, source: fetched.source, created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: fetched.markdown.length, contributors: [ipHash] };
     waitUntilBg(kv.put(`cache:${urlHash}`, JSON.stringify(entry), { expirationTtl: getTtl(1, result.url) }));
     incrementStat(kv, "writes");
-    pages.push({ ...result, markdown: fetched.markdown, source: `fresh (${fetched.source})` });
+    pages.push({ ...result, markdown: cleanForAgent(fetched.markdown), source: `fresh (${fetched.source})` });
   }));
 
   const ordered = searchData.results.map((r) => pages.find((p) => p.url === r.url)).filter(Boolean);
