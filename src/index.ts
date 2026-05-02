@@ -1351,7 +1351,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
   <meta name="robots" content="index, follow">
   <meta name="keywords" content="AI agents, web scraping, markdown, API, MCP, Claude, GPT, LLM, cache, web search, agentic">
   <link rel="canonical" href="https://agentsweb.org">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold'>a</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold' fill='%23f0a050'>a</text></svg>">
 
   <!-- Social -->
   <meta property="og:title" content="agentsweb.org — The internet, but for AI agents">
@@ -1737,7 +1737,7 @@ const PAGE_HEADERS = {
 
 function makePage(title: string, body: string): Response {
   const nav = `<div class="nav"><a href="/">agentsweb.org</a> / ${title.toLowerCase()} &nbsp; <span style="color:#3a3020">|</span> <a href="/docs">docs</a> · <a href="/about">about</a> · <a href="/use-cases">use cases</a> · <a href="/security">security</a> · <a href="/faq">faq</a></div>`;
-  return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — agentsweb.org</title><meta name="description" content="${title} — agentsweb.org. The internet, pre-read for AI agents. Open source markdown cache and web search API."><link rel="canonical" href="https://agentsweb.org/${title.toLowerCase().replace(/\s+/g,'-')}"><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold'>a</text></svg>"><style>${PAGE_STYLE}</style></head><body><div class="page">${nav}${body}<p class="back"><a href="/">&lt; back to agentsweb.org</a></p></div></body></html>`, { headers: PAGE_HEADERS });
+  return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — agentsweb.org</title><meta name="description" content="${title} — agentsweb.org. The internet, pre-read for AI agents. Open source markdown cache and web search API."><link rel="canonical" href="https://agentsweb.org/${title.toLowerCase().replace(/\s+/g,'-')}"><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold' fill='%23f0a050'>a</text></svg>"><style>${PAGE_STYLE}</style></head><body><div class="page">${nav}${body}<p class="back"><a href="/">&lt; back to agentsweb.org</a></p></div></body></html>`, { headers: PAGE_HEADERS });
 }
 
 function dmcaPage(): Response {
