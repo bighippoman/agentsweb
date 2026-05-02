@@ -886,24 +886,200 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
       } catch {}
     }
 
-    try {
-      const resp = await fetch(`https://r.jina.ai/${result.url}`, { headers: { Accept: "text/markdown" }, signal: AbortSignal.timeout(15_000) });
-      if (!resp.ok) { pages.push({ ...result, markdown: null, source: "fetch failed" }); return; }
-      const markdown = await resp.text();
-      if (markdown.length < 200 || validateContent(markdown)) { pages.push({ ...result, markdown: null, source: "filtered" }); return; }
+    const fetched = await fetchMarkdownLive(result.url);
+    if (!fetched || validateContent(fetched.markdown)) {
+      pages.push({ ...result, markdown: null, source: fetched ? "filtered" : "fetch failed" });
+      return;
+    }
 
-      const contentHash = await hashContent(markdown);
-      const ipHash = (await hashContent(ip)).slice(0, 16);
-      const entry: CacheEntry = { url: result.url, markdown, trust_level: 1, source: "jina", created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: markdown.length, contributors: [ipHash] };
-      waitUntilBg(kv.put(`cache:${urlHash}`, JSON.stringify(entry), { expirationTtl: getTtl(1, result.url) }));
-      incrementStat(kv, "writes");
-      pages.push({ ...result, markdown, source: "fresh" });
-    } catch { pages.push({ ...result, markdown: null, source: "error" }); }
+    const contentHash = await hashContent(fetched.markdown);
+    const ipHash = (await hashContent(ip)).slice(0, 16);
+    const entry: CacheEntry = { url: result.url, markdown: fetched.markdown, trust_level: 1, source: fetched.source, created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: fetched.markdown.length, contributors: [ipHash] };
+    waitUntilBg(kv.put(`cache:${urlHash}`, JSON.stringify(entry), { expirationTtl: getTtl(1, result.url) }));
+    incrementStat(kv, "writes");
+    pages.push({ ...result, markdown: fetched.markdown, source: `fresh (${fetched.source})` });
   }));
 
   const ordered = searchData.results.map((r) => pages.find((p) => p.url === r.url)).filter(Boolean);
   incrementStat(kv, "researches");
   return json({ query, results: ordered, cached: ordered.filter((p) => p!.source.startsWith("cache")).length, fetched: ordered.filter((p) => p!.source === "fresh").length });
+}
+
+// ============================================================
+// Multi-tier live fetcher — not dependent on any single service
+// ============================================================
+
+async function fetchMarkdownLive(url: string): Promise<{ markdown: string; source: string } | null> {
+
+  // === TIER 1: Jina Reader (best quality markdown) ===
+  try {
+    const resp = await fetch(`https://r.jina.ai/${url}`, {
+      headers: { Accept: "text/markdown" },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (resp.ok) {
+      const md = await resp.text();
+      if (md.length >= 200) return { markdown: md, source: "jina" };
+    }
+  } catch {}
+
+  // === TIER 2: Parallel — race Codetabs, Wayback, Arquivo.pt, raw fetch ===
+  try {
+    const tier2 = await Promise.allSettled([
+
+      // Codetabs CORS proxy
+      (async (): Promise<{ markdown: string; source: string } | null> => {
+        const resp = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10_000) });
+        if (!resp.ok) return null;
+        const md = htmlToBasicMarkdown(await resp.text());
+        return md.length >= 200 ? { markdown: md, source: "codetabs" } : null;
+      })(),
+
+      // Wayback Machine
+      (async (): Promise<{ markdown: string; source: string } | null> => {
+        const apiResp = await fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(8_000) });
+        if (!apiResp.ok) return null;
+        const data = (await apiResp.json()) as { archived_snapshots?: { closest?: { available: boolean; url: string } } };
+        const snap = data.archived_snapshots?.closest;
+        if (!snap?.available || !snap.url) return null;
+        const rawUrl = snap.url.replace(/\/web\/(\d+)\//, "/web/$1id_/");
+        const pageResp = await fetch(rawUrl, { signal: AbortSignal.timeout(10_000) });
+        if (!pageResp.ok) return null;
+        const md = htmlToBasicMarkdown(await pageResp.text());
+        return md.length >= 200 ? { markdown: md, source: "wayback" } : null;
+      })(),
+
+      // Arquivo.pt (Portuguese web archive — surprisingly broad)
+      (async (): Promise<{ markdown: string; source: string } | null> => {
+        const cdxResp = await fetch(`https://arquivo.pt/wayback/cdx?url=${encodeURIComponent(url)}&limit=1&output=json&sort=reverse`, { signal: AbortSignal.timeout(8_000) });
+        if (!cdxResp.ok) return null;
+        const text = await cdxResp.text();
+        const firstLine = text.trim().split("\n")[0];
+        if (!firstLine) return null;
+        const parsed = JSON.parse(firstLine);
+        if (Array.isArray(parsed) || !parsed.url || !parsed.timestamp) return null;
+        const replayUrl = `https://arquivo.pt/noFrame/replay/${parsed.timestamp}id_/${parsed.url}`;
+        const pageResp = await fetch(replayUrl, { signal: AbortSignal.timeout(12_000) });
+        if (!pageResp.ok) return null;
+        const md = htmlToBasicMarkdown(await pageResp.text());
+        return md.length >= 200 ? { markdown: md, source: "arquivo" } : null;
+      })(),
+
+      // Raw fetch with browser UA
+      (async (): Promise<{ markdown: string; source: string } | null> => {
+        const resp = await fetch(url, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+          },
+          signal: AbortSignal.timeout(10_000),
+          redirect: "follow",
+        });
+        if (!resp.ok) return null;
+        const md = htmlToBasicMarkdown(await resp.text());
+        return md.length >= 200 ? { markdown: md, source: "raw" } : null;
+      })(),
+
+      // Google Cache
+      (async (): Promise<{ markdown: string; source: string } | null> => {
+        const resp = await fetch(`https://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(url)}&strip=1`, {
+          headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!resp.ok) return null;
+        const html = await resp.text();
+        if (html.toLowerCase().includes("unusual traffic") || html.toLowerCase().includes("captcha")) return null;
+        const md = htmlToBasicMarkdown(html);
+        return md.length >= 200 ? { markdown: md, source: "google-cache" } : null;
+      })(),
+    ]);
+
+    // Pick the best result from tier 2
+    let best: { markdown: string; source: string } | null = null;
+    for (const result of tier2) {
+      if (result.status === "fulfilled" && result.value) {
+        if (!best || result.value.markdown.length > best.markdown.length) {
+          best = result.value;
+        }
+      }
+    }
+    if (best) return best;
+  } catch {}
+
+  // === TIER 3: OG Meta fallback (guaranteed to get something) ===
+  try {
+    const resp = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; agentsweb/1.0)" },
+      signal: AbortSignal.timeout(8_000),
+      redirect: "follow",
+    });
+    if (resp.ok) {
+      const html = await resp.text();
+      const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() || "";
+      const desc = html.match(/<meta[^>]*name="description"[^>]*content="([^"]*)"[^>]*>/i)?.[1]
+        || html.match(/<meta[^>]*property="og:description"[^>]*content="([^"]*)"[^>]*>/i)?.[1] || "";
+      if (title && desc && (title + desc).length >= 100) {
+        return { markdown: `# ${title}\n\n${desc}`, source: "og-meta" };
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+/**
+ * Basic HTML to markdown - runs in Workers (no npm deps).
+ * Strips scripts/styles/nav/footer, extracts text with basic formatting.
+ */
+function htmlToBasicMarkdown(html: string): string {
+  let text = html;
+
+  // Try to extract article/main content
+  const articleMatch = text.match(/<article[\s>][\s\S]*?<\/article>/i)
+    ?? text.match(/<main[\s>][\s\S]*?<\/main>/i);
+  if (articleMatch) text = articleMatch[0];
+
+  // Strip noise
+  text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
+  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, "");
+  text = text.replace(/<header[\s\S]*?<\/header>/gi, "");
+  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, "");
+  text = text.replace(/<aside[\s\S]*?<\/aside>/gi, "");
+  text = text.replace(/<noscript[\s\S]*?<\/noscript>/gi, "");
+  text = text.replace(/<svg[\s\S]*?<\/svg>/gi, "");
+
+  // Convert headings
+  text = text.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n# $1\n");
+  text = text.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n## $1\n");
+  text = text.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n### $1\n");
+
+  // Convert links
+  text = text.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)");
+
+  // Convert bold/italic
+  text = text.replace(/<(strong|b)>([\s\S]*?)<\/\1>/gi, "**$2**");
+  text = text.replace(/<(em|i)>([\s\S]*?)<\/\1>/gi, "*$2*");
+
+  // Convert lists
+  text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n");
+
+  // Convert paragraphs/divs to line breaks
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/(p|div|tr|blockquote)>/gi, "\n\n");
+
+  // Strip remaining tags
+  text = text.replace(/<[^>]+>/g, "");
+
+  // Decode entities
+  text = text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
+
+  // Clean whitespace
+  text = text.replace(/[^\S\n]+/g, " ");
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  return text.trim();
 }
 
 // ============================================================
@@ -928,23 +1104,18 @@ async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string): Pr
     } catch {}
   }
 
-  try {
-    const resp = await fetch(`https://r.jina.ai/${url}`, { headers: { Accept: "text/markdown" }, signal: AbortSignal.timeout(15_000) });
-    if (!resp.ok) return json({ error: "fetch failed" }, 502);
-    const markdown = await resp.text();
-    if (markdown.length < 200) return json({ error: "content too short" }, 422);
-    const rejection = validateContent(markdown);
-    if (rejection) return json({ error: rejection }, 422);
+  const result = await fetchMarkdownLive(url);
+  if (!result) return json({ error: "all fetchers failed" }, 502);
 
-    const contentHash = await hashContent(markdown);
-    const ipHash = (await hashContent(ip)).slice(0, 16);
-    const entry: CacheEntry = { url, markdown, trust_level: 1, source: "jina", created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: markdown.length, contributors: [ipHash] };
-    await kv.put(`cache:${urlHash}`, JSON.stringify(entry), { expirationTtl: getTtl(1, url) });
-    incrementStat(kv, "writes");
-    return json({ url, markdown, trust_level: 1, source: "fresh", fresh: true });
-  } catch (e) {
-    return json({ error: `fetch error: ${(e as Error).message}` }, 502);
-  }
+  const rejection = validateContent(result.markdown);
+  if (rejection) return json({ error: rejection }, 422);
+
+  const contentHash = await hashContent(result.markdown);
+  const ipHash = (await hashContent(ip)).slice(0, 16);
+  const entry: CacheEntry = { url, markdown: result.markdown, trust_level: 1, source: result.source, created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: result.markdown.length, contributors: [ipHash] };
+  await kv.put(`cache:${urlHash}`, JSON.stringify(entry), { expirationTtl: getTtl(1, url) });
+  incrementStat(kv, "writes");
+  return json({ url, markdown: result.markdown, trust_level: 1, source: `fresh (${result.source})`, fresh: true });
 }
 
 // ============================================================
@@ -1930,21 +2101,14 @@ export default {
 
         // Refresh if more than 75% through TTL
         if (age > ttl * 0.75) {
-          // Re-fetch via Jina
-          const resp = await fetch(`https://r.jina.ai/${entry.url}`, {
-            headers: { Accept: "text/markdown" },
-            signal: AbortSignal.timeout(15_000),
-          });
-          if (!resp.ok) continue;
-          const markdown = await resp.text();
-          if (markdown.length < 200) continue;
-
-          // Validate fetched content through same gates as user writes
-          const rejection = validateContent(markdown);
+          const fetched = await fetchMarkdownLive(entry.url);
+          if (!fetched) continue;
+          const rejection = validateContent(fetched.markdown);
           if (rejection) continue;
 
-          const contentHash = await hashContent(markdown);
-          entry.markdown = markdown;
+          const contentHash = await hashContent(fetched.markdown);
+          entry.markdown = fetched.markdown;
+          entry.source = fetched.source;
           entry.content_hash = contentHash;
           entry.updated_at = Date.now();
           entry.size = markdown.length;
