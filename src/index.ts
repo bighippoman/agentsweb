@@ -1193,7 +1193,7 @@ By Mark Gurman. Clean markdown. Done.
     <div class="section">
       <h2>&gt; try it live</h2>
       <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem">
-        <input id="tryQ" type="text" placeholder="search anything..." value="how do transformers work" class="try-input" style="flex:1">
+        <input id="tryQ" type="text" placeholder="search anything..." value="react server components tutorial" class="try-input" style="flex:1">
         <button onclick="tryIt()" id="tryBtn" class="try-btn">RESEARCH</button>
       </div>
       <div class="term" id="tryTerm" style="display:none">
@@ -1278,7 +1278,7 @@ By Mark Gurman. Clean markdown. Done.
     </div>
 
     <div class="footer">
-      <span><a href="/docs">docs</a> · <a href="/security">security</a> · <a href="/about">about</a> · <a href="https://github.com/bighippoman/agentsweb">source</a> · <a href="/dmca">dmca</a> · <a href="/terms">terms</a></span>
+      <span><a href="/docs">docs</a> · <a href="/security">security</a> · <a href="/about">about</a> · <a href="/use-cases">use cases</a> · <a href="/compare">compare</a> · <a href="/how-it-works">how it works</a> · <a href="/faq">faq</a> · <a href="/integrations">integrations</a> · <a href="https://github.com/bighippoman/agentsweb">source</a> · <a href="/dmca">dmca</a> · <a href="/terms">terms</a></span>
       <span>${total.toLocaleString()} ops served</span>
     </div>
 
@@ -1593,6 +1593,314 @@ function aboutPage(): Response {
 }
 
 // ============================================================
+// SEO / Marketing pages
+// ============================================================
+
+function useCasesPage(): Response {
+  return makePage("Use Cases", `
+    <h1>&gt; use cases</h1>
+
+    <p>Every AI agent needs the internet. Here's how real teams use agentsweb.org to give their agents web access without the pain.</p>
+
+    <h2>coding assistants reading documentation</h2>
+    <p>Your AI coding assistant needs to read the latest API docs for a library you're using. The docs site serves HTML with JavaScript rendering, cookie banners, and a nav sidebar that's bigger than the actual content. Your agent gets a 403 or a wall of garbage.</p>
+    <p>With agentsweb, one call:</p>
+    <p><code>GET /fetch?url=https://docs.stripe.com/api/charges</code></p>
+    <p>Clean markdown. Every heading, every code example, every parameter table — preserved. The next agent that needs the same page gets it in <strong>under 50ms</strong> from edge cache. No rendering. No JavaScript. No garbage.</p>
+
+    <h2>research agents gathering papers</h2>
+    <p>Research agents need to read dozens of papers, blog posts, and technical references per task. Each page is a minefield of CAPTCHAs, bot detection, and broken HTML.</p>
+    <p><code>GET /research?q=transformer+attention+mechanism&count=5</code></p>
+    <p>One call. Five results. All fetched, cleaned, cached, and returned as markdown. Your agent reads five papers in the time it used to take to fail at reading one.</p>
+
+    <h2>news aggregators and monitoring</h2>
+    <p>News monitoring agents need real-time access to dozens of sources. Most news sites actively block automated access. The result? Your agent is blind to breaking news.</p>
+    <p><code>GET /web?q=openai+announcement+today&count=10</code></p>
+    <p>Ten results from the open web. No API key. No subscription. No rate limit anxiety. Pair it with <code>/fetch</code> to get full article content as clean markdown for your LLM pipeline.</p>
+
+    <h2>content pipelines and RAG systems</h2>
+    <p>RAG systems need to ingest web content at scale. Traditional web scraping means maintaining a fleet of headless browsers, proxy rotations, and CAPTCHA solvers. That's a full-time job.</p>
+    <p><code>GET /batch?urls=https://example.com/page1,https://example.com/page2,...</code></p>
+    <p>Up to 20 URLs per batch request. All resolved from the global cache. Feed the results directly into your embedding pipeline. <strong>No browser. No proxy. No infrastructure.</strong></p>
+
+    <h2>ai agent internet access for any framework</h2>
+    <p>Whether you're building with LangChain, CrewAI, AutoGPT, or a custom agent framework — your agents need web access. agentsweb.org is a single HTTP endpoint that works everywhere. No SDK lock-in. No vendor dependency. Just <code>GET</code> and <code>PUT</code>.</p>
+    <p><code>curl agentsweb.org/fetch?url=https://any-website.com</code></p>
+    <p>That's it. Your agent has the internet now. Clean markdown, cached at the edge, secured against prompt injection. <strong>Every web page, pre-chewed for machines.</strong></p>
+  `);
+}
+
+function comparePage(): Response {
+  return makePage("Compare", `
+    <h1>&gt; compare</h1>
+
+    <p>There are other ways to give AI agents web access. Most of them are bad. Here's why.</p>
+
+    <h2>raw fetch (the default)</h2>
+    <p>Just <code>fetch()</code> the URL directly. What could go wrong?</p>
+    <ul>
+      <li>403 Forbidden on most sites worth reading</li>
+      <li>Cloudflare challenges, CAPTCHAs, bot detection</li>
+      <li>Raw HTML with 200KB of JavaScript, ads, and cookie banners</li>
+      <li>Your LLM burns half its context window parsing a nav sidebar</li>
+      <li>No caching — every agent fetches the same page independently</li>
+    </ul>
+    <p><strong>agentsweb:</strong> Clean markdown. Sub-50ms. Global cache. No 403s. No garbage HTML. Done.</p>
+
+    <h2>jina reader (r.jina.ai)</h2>
+    <p>Jina Reader is solid for converting a single URL to markdown. We actually use it as one of our fetch backends. But:</p>
+    <ul>
+      <li>Single-page only — no search, no batch, no research</li>
+      <li>No caching layer — every request is a live fetch</li>
+      <li>No trust consensus — no way to verify content integrity</li>
+      <li>No prompt injection scanning</li>
+      <li>Rate limits on their free tier</li>
+    </ul>
+    <p><strong>agentsweb:</strong> Search + fetch + cache in one call. Self-healing consensus. Prompt injection detection. Edge caching for repeat reads. Jina is a tool — agentsweb is the infrastructure layer.</p>
+
+    <h2>browserless / puppeteer</h2>
+    <p>Run a headless browser in the cloud. The "enterprise" approach:</p>
+    <ul>
+      <li>$0.01-0.05 per page render — gets expensive fast</li>
+      <li>2-10 second render times (vs 50ms from agentsweb cache)</li>
+      <li>You need to maintain browser infrastructure</li>
+      <li>Still returns raw HTML — you need another step to get markdown</li>
+      <li>No shared caching across agents or teams</li>
+    </ul>
+    <p><strong>agentsweb:</strong> Free. Sub-50ms. Returns markdown directly. Shared cache means you rarely trigger a live fetch. No browser infrastructure to maintain. No cost scaling nightmares.</p>
+
+    <h2>serpapi / google search api</h2>
+    <p>Great for search results. But that's all you get:</p>
+    <ul>
+      <li>Search results only — titles, URLs, snippets</li>
+      <li>No page content — you still need to fetch and parse each result</li>
+      <li>$50+/month for reasonable usage</li>
+      <li>API key required</li>
+      <li>Google-specific — tied to one search engine</li>
+    </ul>
+    <p><strong>agentsweb:</strong> <code>/research</code> does search AND fetches AND caches the content in one call. No API key. No subscription. Your agent gets the actual page content, not just links to pages it can't read.</p>
+
+    <h2>the bottom line</h2>
+    <p>Other tools solve one piece of the puzzle. agentsweb.org is the <strong>complete web access layer for AI agents</strong> — search, fetch, cache, verify, and serve clean markdown. One API. No keys. No cost. Open source.</p>
+    <p>That's the difference between a tool and infrastructure.</p>
+  `);
+}
+
+function howItWorksPage(): Response {
+  return makePage("How It Works", `
+    <h1>&gt; how it works</h1>
+
+    <p>agentsweb.org is a multi-tier pipeline that turns the hostile web into clean, verified markdown for AI agents. Here's what happens when your agent makes a request.</p>
+
+    <h2>the request flow</h2>
+    <p><code>Your Agent → agentsweb.org → Edge Cache → KV Store → Live Fetch → Markdown</code></p>
+    <p>Every request flows through up to four layers, each one faster than the next. Most requests never make it past layer two.</p>
+
+    <h2>layer 1: edge cache (sub-1ms)</h2>
+    <p>Cloudflare's edge network spans 300+ cities worldwide. When a page has been read recently, it's cached at the edge node closest to your agent. The response comes back in <strong>under 1 millisecond</strong>. No KV lookup. No network hop. Just memory.</p>
+    <p>Edge cache TTL: 5 minutes. Popular pages stay warm indefinitely because agents keep reading them.</p>
+
+    <h2>layer 2: kv store (5-50ms)</h2>
+    <p>Cloudflare KV is a globally replicated key-value store. If the edge cache is cold, we check KV. The data is replicated across Cloudflare's entire network — reads are fast from anywhere on earth.</p>
+    <p>KV entries have dynamic TTLs based on trust level and domain type:</p>
+    <ul>
+      <li><strong>News domains</strong> (bloomberg, nyt, bbc): 1 day TTL — content changes fast</li>
+      <li><strong>Documentation</strong> (wikipedia, MDN, docs.rs): 30 day TTL — content is stable</li>
+      <li><strong>Low trust (1):</strong> 1 day — unverified content expires quickly</li>
+      <li><strong>Medium trust (2-4):</strong> 7 days — multiple sources agree</li>
+      <li><strong>High trust (5+):</strong> 30 days — battle-tested content</li>
+    </ul>
+
+    <h2>layer 3: live fetch</h2>
+    <p>Cache miss. The page hasn't been cached yet, or the entry expired. agentsweb fetches the page through a markdown conversion service, runs it through every security gate, and stores it in KV. The next agent gets it from cache.</p>
+    <p>Live fetch takes 1-15 seconds depending on the target site. But it only happens once per page per TTL window. Every agent after the first one gets the cached version.</p>
+
+    <h2>the self-healing consensus engine</h2>
+    <p>This is the part that makes agentsweb fundamentally different from a simple cache.</p>
+    <p>Every cached entry has a <strong>trust level</strong> (1-100). Trust starts at 1 when a single agent writes the entry. When a different agent — identified by IP address, not self-reported IDs — reads the same page and confirms the content matches, trust increments.</p>
+    <p>At trust level 2+, the entry is <strong>protected from overwrites</strong>. An attacker can't just submit a poisoned version — the existing trusted content wins.</p>
+    <p>If someone does manage to poison a low-trust entry, it <strong>self-destructs on the next legitimate read</strong>. The reading agent fetches the page locally, sees the mismatch, and submits the correct version. The poison survives exactly one read.</p>
+
+    <h2>security pipeline</h2>
+    <p>Every piece of content passes through these gates before being stored:</p>
+    <ul>
+      <li><strong>URL validation:</strong> SSRF prevention, private IP blocking, credential stripping</li>
+      <li><strong>Prompt injection scan:</strong> 30+ patterns covering instruction overrides, role manipulation, jailbreaks, template tokens</li>
+      <li><strong>Malicious content detection:</strong> Script injection, event handlers, iframes, document.cookie</li>
+      <li><strong>Captcha/login wall detection:</strong> Cloudflare challenges, reCAPTCHA, "sign in to continue"</li>
+      <li><strong>Unicode steganography:</strong> Zero-width character attacks detected and rejected</li>
+      <li><strong>Entropy analysis:</strong> Base64 smuggling and repetition padding attacks blocked</li>
+    </ul>
+    <p>Content that fails any gate is rejected, the submitter gets a strike, and after 5 strikes the IP is auto-banned for an hour.</p>
+
+    <h2>cache warming (cron)</h2>
+    <p>A background cron job samples 10 random URLs from the index every run. If an entry is past 75% of its TTL, the cron fetches a fresh version and updates the cache. Popular pages never expire — they're always warm and ready.</p>
+
+    <h2>why this architecture</h2>
+    <p>The web wasn't built for AI agents. HTML is for browsers. JavaScript is for humans. CAPTCHAs exist specifically to stop automated access. agentsweb is the <strong>translation layer</strong> — it absorbs all that complexity so your agent doesn't have to.</p>
+    <p>One fetch. Clean markdown. Verified by consensus. Cached at the edge. <strong>That's the whole idea.</strong></p>
+  `);
+}
+
+function faqPage(): Response {
+  return makePage("FAQ", `
+    <h1>&gt; faq</h1>
+
+    <h2>is it free?</h2>
+    <p>Yes. Completely free. No API keys, no signup, no credit card, no "free tier with limits that make it useless." Just hit the endpoints. We run on Cloudflare Workers, which is cheap enough that we don't need to charge you.</p>
+
+    <h2>do i need an api key?</h2>
+    <p>No. Every endpoint is open. <code>curl agentsweb.org/fetch?url=...</code> and you're done. We use per-IP rate limiting instead of API keys because agents shouldn't need to manage credentials just to read a web page.</p>
+
+    <h2>how fresh is the cache?</h2>
+    <p>It depends on the trust level and the domain:</p>
+    <ul>
+      <li>News sites: 1 day TTL</li>
+      <li>Documentation: up to 30 days</li>
+      <li>Low-trust entries: 1 day</li>
+      <li>High-trust entries: up to 30 days</li>
+    </ul>
+    <p>A background cron job also pre-warms entries approaching expiry. When a response includes <code>"stale": true</code>, the content is approaching its TTL — still valid, but a refresh is coming.</p>
+
+    <h2>can i self-host this?</h2>
+    <p>Yes. The entire codebase is open source on <a href="https://github.com/bighippoman/agentsweb">GitHub</a>. It's a single Cloudflare Worker with KV. Deploy it to your own Cloudflare account with <code>npx wrangler deploy</code>. You'll need a KV namespace and an admin secret.</p>
+
+    <h2>is it legal?</h2>
+    <p>agentsweb operates under <strong>DMCA 512(b)</strong> — the system caching safe harbor. We cache temporary, transformed copies of publicly accessible web pages. Content owners can request removal via our <a href="/dmca">DMCA policy</a>, and takedowns are permanent. We also respect robots.txt directives for the <code>agentsweb</code> user agent.</p>
+
+    <h2>what about paywalled content?</h2>
+    <p>agentsweb only caches publicly accessible pages. Login walls and subscription gates are detected and rejected automatically. If a page requires authentication to read, we can't cache it and we won't try.</p>
+
+    <h2>how do rate limits work?</h2>
+    <ul>
+      <li><strong>Reads:</strong> 600 per minute per IP</li>
+      <li><strong>Writes:</strong> 10 per minute per IP</li>
+      <li><strong>Confirms:</strong> 60 per minute per IP</li>
+    </ul>
+    <p>If you submit 5 pieces of content that fail security validation, your IP is auto-banned for 1 hour. This prevents cache poisoning attempts.</p>
+
+    <h2>can i contribute to the cache?</h2>
+    <p>Yes. <code>PUT /</code> with a JSON body containing <code>url</code>, <code>markdown</code>, and <code>source</code>. Your content passes through the full security pipeline. If it's clean, it enters the cache at trust level 1. Other agents can confirm it to increase trust.</p>
+
+    <h2>how do i integrate with my ai agent?</h2>
+    <p>Any HTTP client works. See our <a href="/integrations">integrations page</a> for specific instructions for Claude Code, Cursor, Windsurf, Codex, LangChain, Python, and curl.</p>
+
+    <h2>what if someone poisons the cache?</h2>
+    <p>Short answer: the poison self-destructs. Long answer: all content passes through 30+ prompt injection patterns, XSS filters, and unicode steganography detection. Even if something slips through, the self-healing consensus means the next legitimate agent to read the entry will verify it and replace the poisoned version. Entries with trust level 2+ can't be overwritten by a single agent.</p>
+
+    <h2>is there an mcp server?</h2>
+    <p>Yes. <a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> is the MCP server that integrates agentsweb with Claude Code, Cursor, Windsurf, and any MCP-compatible client. Install with <code>npx -y intercept-mcp</code>.</p>
+
+    <h2>what search engine does /web use?</h2>
+    <p>We use SearXNG (a privacy-respecting metasearch engine) as the primary backend, with DuckDuckGo as a fallback. No Google API key needed. No vendor lock-in.</p>
+
+    <h2>what's the difference between /fetch and /?url=</h2>
+    <p><code>/fetch?url=...</code> will fetch the page live if it's not cached. <code>/?url=...</code> is cache-only — it returns 404 if the page hasn't been cached. Use <code>/fetch</code> when you want the content no matter what. Use <code>/?url=</code> when you want speed and are okay with a miss.</p>
+
+    <h2>how do i report abuse?</h2>
+    <p>Email <strong>dmca@agentsweb.org</strong>. We respond within 24 hours. Takedowns are permanent and immediate.</p>
+  `);
+}
+
+function integrationsPage(): Response {
+  return makePage("Integrations", `
+    <h1>&gt; integrations</h1>
+
+    <p>agentsweb.org works with any HTTP client. Here's how to integrate it with the tools you're already using for AI agent web access.</p>
+
+    <h2>claude code (mcp)</h2>
+    <p>The fastest way to give Claude Code web search and fetch capabilities. Install the MCP server:</p>
+    <p><code>npx -y intercept-mcp</code></p>
+    <p>Add to your Claude Code MCP config (<code>~/.claude/settings.json</code>):</p>
+    <p><code>{ "mcpServers": { "intercept": { "command": "npx", "args": ["-y", "intercept-mcp"] } } }</code></p>
+    <p>Now Claude Code can search the web, fetch pages, and read cached markdown — all through agentsweb.org.</p>
+
+    <h2>cursor</h2>
+    <p>Cursor supports MCP servers. Add to your Cursor MCP config:</p>
+    <p><code>{ "mcpServers": { "intercept": { "command": "npx", "args": ["-y", "intercept-mcp"] } } }</code></p>
+    <p>Your Cursor agent now has full web access — search, fetch, and cache via agentsweb.</p>
+
+    <h2>windsurf</h2>
+    <p>Windsurf's Cascade supports MCP. Add the same configuration:</p>
+    <p><code>{ "mcpServers": { "intercept": { "command": "npx", "args": ["-y", "intercept-mcp"] } } }</code></p>
+    <p>Cascade can now search and read the web through the agentsweb markdown API.</p>
+
+    <h2>codex (openai)</h2>
+    <p>For OpenAI's Codex and custom GPT agents, use the HTTP API directly:</p>
+    <p><code>GET https://agentsweb.org/research?q=your+query</code></p>
+    <p><code>GET https://agentsweb.org/fetch?url=https://example.com</code></p>
+    <p>Add these as function definitions in your agent's tool configuration. The JSON response parses cleanly into any agent framework.</p>
+
+    <h2>langchain (python)</h2>
+    <p>Use the Python SDK or plain requests:</p>
+    <p><code>pip install agentsweb</code></p>
+    <p>Or integrate directly as a custom tool:</p>
+    <p><code>import requests</code></p>
+    <p><code>def fetch_page(url: str) -> str:</code></p>
+    <p><code>&nbsp;&nbsp;r = requests.get(f"https://agentsweb.org/fetch?url={url}")</code></p>
+    <p><code>&nbsp;&nbsp;return r.json()["markdown"]</code></p>
+    <p>Wrap it as a LangChain <code>Tool</code> and your agent has web access with caching, search, and prompt injection protection built in.</p>
+
+    <h2>python (requests / httpx)</h2>
+    <p>No SDK needed. Just HTTP:</p>
+    <p><code>import requests</code></p>
+    <p><code># Search the web</code></p>
+    <p><code>r = requests.get("https://agentsweb.org/web?q=python+async+tutorial")</code></p>
+    <p><code>results = r.json()["results"]</code></p>
+    <p><code># Fetch a specific page as markdown</code></p>
+    <p><code>r = requests.get("https://agentsweb.org/fetch?url=https://docs.python.org/3/library/asyncio.html")</code></p>
+    <p><code>markdown = r.json()["markdown"]</code></p>
+    <p><code># Research: search + fetch + cache in one call</code></p>
+    <p><code>r = requests.get("https://agentsweb.org/research?q=rust+error+handling&count=3")</code></p>
+
+    <h2>curl</h2>
+    <p>The simplest possible integration. No libraries, no dependencies:</p>
+    <p><code>curl "agentsweb.org/fetch?url=https://example.com"</code></p>
+    <p><code>curl "agentsweb.org/web?q=your+search+query"</code></p>
+    <p><code>curl "agentsweb.org/research?q=deep+learning+transformers"</code></p>
+    <p><code>curl "agentsweb.org/raw?url=https://example.com"</code> (raw markdown, no JSON)</p>
+
+    <h2>any http client</h2>
+    <p>agentsweb is a REST API. If your tool can make HTTP GET requests, it can use agentsweb. No auth headers. No API keys. No OAuth. No SDK.</p>
+    <p><code>GET https://agentsweb.org/fetch?url={any_url}</code> — get any web page as markdown</p>
+    <p><code>GET https://agentsweb.org/web?q={query}</code> — search the web</p>
+    <p><code>GET https://agentsweb.org/research?q={query}</code> — search + fetch + cache</p>
+    <p>That's the entire API surface for web scraping for AI. Three endpoints. Zero configuration. <strong>Works everywhere.</strong></p>
+  `);
+}
+
+function sitemapXml(): Response {
+  const pages = [
+    "",
+    "/docs",
+    "/about",
+    "/security",
+    "/dmca",
+    "/terms",
+    "/use-cases",
+    "/compare",
+    "/how-it-works",
+    "/faq",
+    "/integrations",
+  ];
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${pages.map((p) => `  <url>
+    <loc>https://agentsweb.org${p}</loc>
+    <changefreq>${p === "" ? "daily" : "weekly"}</changefreq>
+    <priority>${p === "" ? "1.0" : p === "/docs" ? "0.9" : "0.8"}</priority>
+  </url>`).join("\n")}
+</urlset>`;
+  return new Response(xml, {
+    headers: {
+      "Content-Type": "application/xml; charset=utf-8",
+      "Cache-Control": "public, max-age=3600",
+      ...securityHeaders(),
+    },
+  });
+}
+
+// ============================================================
 // Main entry point
 // ============================================================
 
@@ -1769,6 +2077,12 @@ export default {
     if (method === "GET" && url.pathname === "/docs") return docsPage();
     if (method === "GET" && url.pathname === "/security") return securityPage();
     if (method === "GET" && url.pathname === "/about") return aboutPage();
+    if (method === "GET" && url.pathname === "/use-cases") return useCasesPage();
+    if (method === "GET" && url.pathname === "/compare") return comparePage();
+    if (method === "GET" && url.pathname === "/how-it-works") return howItWorksPage();
+    if (method === "GET" && url.pathname === "/faq") return faqPage();
+    if (method === "GET" && url.pathname === "/integrations") return integrationsPage();
+    if (method === "GET" && url.pathname === "/sitemap.xml") return sitemapXml();
 
     return json({ error: "not found" }, 404);
   },
