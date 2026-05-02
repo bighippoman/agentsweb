@@ -1,5 +1,6 @@
 interface Env {
   CACHE: KVNamespace;
+  ADMIN_SECRET: string;
 }
 
 interface CacheEntry {
@@ -324,7 +325,13 @@ async function trackAbuse(kv: KVNamespace, ip: string): Promise<void> {
 
 async function isAbuseBanned(kv: KVNamespace, ip: string): Promise<boolean> {
   const strikes = parseInt((await kv.get(`abuse:${ip}`)) || "0", 10);
-  return strikes >= 5; // 5 bad submissions in 1hr = banned
+  return strikes >= 5;
+}
+
+function isAdmin(request: Request, env: Env): boolean {
+  if (!env.ADMIN_SECRET) return false;
+  const auth = request.headers.get("Authorization") || "";
+  return auth === `Bearer ${env.ADMIN_SECRET}`;
 }
 
 // ============================================================
@@ -498,9 +505,8 @@ async function handleRead(url: string, kv: KVNamespace, ip: string): Promise<Res
   });
 }
 
-async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string): Promise<Response> {
-  // Check abuse ban first
-  if (await isAbuseBanned(kv, ip)) {
+async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admin = false): Promise<Response> {
+  if (!admin && await isAbuseBanned(kv, ip)) {
     return json({ error: "temporarily banned" }, 403);
   }
 
@@ -600,8 +606,8 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string): Pro
   return json({ status: "accepted", trust_level: 1 });
 }
 
-async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string): Promise<Response> {
-  if (await isAbuseBanned(kv, ip)) {
+async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string, admin = false): Promise<Response> {
+  if (!admin && await isAbuseBanned(kv, ip)) {
     return json({ error: "temporarily banned" }, 403);
   }
 
@@ -1004,6 +1010,7 @@ function termsPage(): Response {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     _ctx = ctx;
+    const admin = isAdmin(request, env);
     const method = request.method;
     if (!["GET", "PUT", "POST", "OPTIONS", "HEAD"].includes(method)) {
       return json({ error: "method not allowed" }, 405);
@@ -1027,6 +1034,22 @@ export default {
       return await landingPage(env.CACHE);
     }
 
+    // Admin: purge ban
+    if (method === "POST" && url.pathname === "/admin/purge-ban" && admin) {
+      await env.CACHE.delete(`abuse:${ip}`);
+      return json({ status: "ban cleared", ip });
+    }
+
+    // Admin: clear all bans for a specific IP
+    if (method === "POST" && url.pathname === "/admin/purge-ban-ip" && admin) {
+      const body = await parseBody<{ ip: string }>(request);
+      if (body?.ip) {
+        await env.CACHE.delete(`abuse:${body.ip}`);
+        return json({ status: "ban cleared", ip: body.ip });
+      }
+      return json({ error: "ip required" }, 400);
+    }
+
     // API routes
     try {
       if (method === "GET" && url.pathname === "/" && url.searchParams.has("url")) {
@@ -1036,13 +1059,13 @@ export default {
       if (method === "PUT" && url.pathname === "/") {
         const body = await parseBody<WriteRequest>(request);
         if (!body) return json({ error: "invalid json body" }, 400);
-        return await handleWrite(body, env.CACHE, ip);
+        return await handleWrite(body, env.CACHE, ip, admin);
       }
 
       if (method === "POST" && url.pathname === "/confirm") {
         const body = await parseBody<ConfirmRequest>(request);
         if (!body) return json({ error: "invalid json body" }, 400);
-        return await handleConfirm(body, env.CACHE, ip);
+        return await handleConfirm(body, env.CACHE, ip, admin);
       }
 
       if (method === "GET" && url.pathname === "/stats") {
