@@ -1437,22 +1437,9 @@ async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string): Pr
   const result = await fetchMarkdownLive(url);
   if (!result) return json({ error: "all fetchers failed" }, 502);
 
-  let markdown = result.markdown;
-  const rejection = validateContent(markdown);
-  if (rejection) {
-    // If it's a login wall, try extracting partial content before rejecting
-    if (rejection === "login wall detected") {
-      const partial = extractPartialContent(markdown, url);
-      if (partial) {
-        markdown = partial;
-        result.source += " (partial)";
-      } else {
-        return json({ error: rejection }, 422);
-      }
-    } else {
-      return json({ error: rejection }, 422);
-    }
-  }
+  const rejection = validateContent(result.markdown);
+  if (rejection) return json({ error: rejection }, 422);
+  const markdown = result.markdown;
 
   const contentHash = await hashContent(markdown);
   const ipHash = (await hashContent(ip)).slice(0, 16);
