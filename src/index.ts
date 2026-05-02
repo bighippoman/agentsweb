@@ -510,7 +510,7 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
     return json({ error: "temporarily banned" }, 403);
   }
 
-  if (!(await checkRateLimit(kv, ip, "write"))) {
+  if (!admin && !(await checkRateLimit(kv, ip, "write"))) {
     return json({ error: "rate limited" }, 429);
   }
 
