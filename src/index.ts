@@ -446,7 +446,13 @@ async function handleRead(url: string, kv: KVNamespace, ip: string): Promise<Res
     return json({ error: "rate limited" }, 429);
   }
 
-  const key = `cache:${await hashUrl(url)}`;
+  const urlHash = await hashUrl(url);
+
+  // Check DMCA flag before serving
+  const dmcaFlag = await kv.get(`dmca:${urlHash}`);
+  if (dmcaFlag) return json({ error: "removed per DMCA notice" }, 451);
+
+  const key = `cache:${urlHash}`;
   const raw = await kv.get(key);
   if (!raw) return json({ status: "miss" }, 404);
 
@@ -454,7 +460,7 @@ async function handleRead(url: string, kv: KVNamespace, ip: string): Promise<Res
   try {
     entry = JSON.parse(raw);
   } catch {
-    await kv.delete(key); // purge corrupted entry
+    await kv.delete(key);
     return json({ status: "miss" }, 404);
   }
 
@@ -502,12 +508,17 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string): Pro
     return json({ error: rejection }, 422);
   }
 
-  // Check domain blocklist
+  // Check domain blocklist + DMCA takedowns
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, "");
     const blocked = await kv.get(`block:${hostname}`);
-    if (blocked) return json({ error: "domain blocked" }, 403);
+    if (blocked) return json({ error: "domain opted out of caching" }, 403);
   } catch {}
+
+  // Check if this specific URL has been DMCA'd
+  const urlHash = await hashUrl(url);
+  const dmcaFlag = await kv.get(`dmca:${urlHash}`);
+  if (dmcaFlag) return json({ error: "removed per DMCA notice" }, 451);
 
   const contentHash = await hashContent(markdown);
   const key = `cache:${await hashUrl(url)}`;
@@ -742,7 +753,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     </div>
 
     <div class="footer">
-      <span><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> &middot; <a href="https://github.com/bighippoman/agentsweb">source</a></span>
+      <span><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> &middot; <a href="https://github.com/bighippoman/agentsweb">source</a> &middot; <a href="/dmca">DMCA</a> &middot; <a href="/terms">Terms</a></span>
       <span>Cloudflare Workers + KV</span>
     </div>
   </div>
@@ -760,6 +771,205 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
       "Cache-Control": "public, max-age=60",
       "X-DNS-Prefetch-Control": "off",
       "Cross-Origin-Opener-Policy": "same-origin",
+    },
+  });
+}
+
+// ============================================================
+// DMCA takedown handler
+// ============================================================
+
+async function handleTakedown(request: Request, kv: KVNamespace, ip: string): Promise<Response> {
+  if (!(await checkRateLimit(kv, ip, "write"))) {
+    return json({ error: "rate limited" }, 429);
+  }
+
+  const body = await parseBody<{ url: string; email: string; reason?: string }>(request);
+  if (!body || !body.url || !body.email) {
+    return json({ error: "url and email required" }, 400);
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) {
+    return json({ error: "valid email required" }, 400);
+  }
+
+  const urlErr = validateUrl(body.url);
+  if (urlErr) return json({ error: urlErr }, 400);
+
+  const urlHash = await hashUrl(body.url);
+
+  // Flag the URL as DMCA'd (permanent until manually reviewed)
+  await kv.put(`dmca:${urlHash}`, JSON.stringify({
+    url: body.url,
+    email: body.email,
+    reason: body.reason || "DMCA takedown request",
+    timestamp: Date.now(),
+    ip,
+  }));
+
+  // Delete the cached entry
+  const key = `cache:${urlHash}`;
+  await kv.delete(key);
+
+  incrementStat(kv, "takedowns");
+
+  return json({ status: "removed", url: body.url });
+}
+
+// ============================================================
+// Domain opt-out handler
+// ============================================================
+
+async function handleOptOut(request: Request, kv: KVNamespace, ip: string): Promise<Response> {
+  if (!(await checkRateLimit(kv, ip, "write"))) {
+    return json({ error: "rate limited" }, 429);
+  }
+
+  const body = await parseBody<{ domain: string; email: string }>(request);
+  if (!body || !body.domain || !body.email) {
+    return json({ error: "domain and email required" }, 400);
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) {
+    return json({ error: "valid email required" }, 400);
+  }
+
+  const domain = body.domain.replace(/^www\./, "").toLowerCase();
+  if (domain.length < 3 || !domain.includes(".")) {
+    return json({ error: "invalid domain" }, 400);
+  }
+
+  await kv.put(`block:${domain}`, JSON.stringify({
+    email: body.email,
+    timestamp: Date.now(),
+    ip,
+  }));
+
+  return json({ status: "opted out", domain });
+}
+
+// ============================================================
+// Legal pages
+// ============================================================
+
+function dmcaPage(): Response {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DMCA Policy - agentsweb.org</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
+    .page { max-width: 720px; margin: 0 auto; padding: 4rem 2rem; }
+    h1 { font-size: 1.8rem; font-weight: 700; color: #fff; margin-bottom: 1.5rem; }
+    h2 { font-size: 1.1rem; color: #fff; margin: 1.5rem 0 0.75rem; }
+    p, li { color: #999; line-height: 1.7; margin-bottom: 0.75rem; }
+    ul { padding-left: 1.5rem; }
+    code { background: #161616; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.9rem; color: #ccc; }
+    a { color: #60a5fa; text-decoration: none; }
+    .back { margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>DMCA &amp; Takedown Policy</h1>
+
+    <h2>What agentsweb.org is</h2>
+    <p>agentsweb.org is an automated system cache operating under DMCA 512(b) (system caching safe harbor). It temporarily caches markdown representations of publicly accessible web pages to reduce redundant network requests by AI agents. All cached content is ephemeral — entries expire automatically based on TTL policies.</p>
+
+    <h2>Automated cache, not a hosting service</h2>
+    <p>We do not host, curate, or editorially select content. Content enters the cache only through automated processes initiated by third-party AI agent instances. We do not modify, edit, or control what content is cached beyond automated quality and security filtering.</p>
+
+    <h2>Transformative purpose</h2>
+    <p>Cached content is stored as markdown — a structural transformation from the original HTML — for the purpose of machine processing by AI agents. This is a fundamentally different use from the original publication purpose, analogous to how search engine caches transform and index content for information retrieval.</p>
+
+    <h2>Content removal</h2>
+    <p>Content owners can remove any cached content instantly:</p>
+    <ul>
+      <li><strong>Single URL takedown:</strong> <code>POST /takedown</code> with <code>{"url": "...", "email": "..."}</code></li>
+      <li><strong>Entire domain opt-out:</strong> <code>POST /opt-out</code> with <code>{"domain": "...", "email": "..."}</code></li>
+    </ul>
+    <p>Takedowns are processed immediately and automatically. No human review delay. The URL is permanently flagged and cannot be re-cached.</p>
+
+    <h2>DMCA notices</h2>
+    <p>For formal DMCA takedown notices, email <strong>dmca@agentsweb.org</strong> with:</p>
+    <ul>
+      <li>The URL(s) of the cached content</li>
+      <li>The original URL(s) of your copyrighted work</li>
+      <li>A statement of good faith belief that the use is not authorized</li>
+      <li>Your contact information</li>
+    </ul>
+    <p>We respond to all valid DMCA notices within 24 hours.</p>
+
+    <h2>robots.txt</h2>
+    <p>Website owners can prevent their content from being cached by adding <code>User-agent: agentsweb</code> with <code>Disallow: /</code> to their robots.txt file, or by using the domain opt-out API.</p>
+
+    <p class="back"><a href="/">Back to agentsweb.org</a></p>
+  </div>
+</body>
+</html>`;
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+    },
+  });
+}
+
+function termsPage(): Response {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Terms of Service - agentsweb.org</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
+    .page { max-width: 720px; margin: 0 auto; padding: 4rem 2rem; }
+    h1 { font-size: 1.8rem; font-weight: 700; color: #fff; margin-bottom: 1.5rem; }
+    h2 { font-size: 1.1rem; color: #fff; margin: 1.5rem 0 0.75rem; }
+    p { color: #999; line-height: 1.7; margin-bottom: 0.75rem; }
+    a { color: #60a5fa; text-decoration: none; }
+    .back { margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Terms of Service</h1>
+
+    <h2>Service description</h2>
+    <p>agentsweb.org provides an automated system cache for AI agent infrastructure. It stores temporary markdown representations of publicly accessible web pages.</p>
+
+    <h2>No warranty</h2>
+    <p>The service is provided "as is" without warranty. Cached content may be incomplete, outdated, or incorrect. Content accuracy depends on third-party submissions and is not guaranteed.</p>
+
+    <h2>Acceptable use</h2>
+    <p>You may not: submit content containing malware, prompt injections, or other malicious payloads; attempt to poison the cache; use the service for DDoS amplification; exceed rate limits through automated means.</p>
+
+    <h2>Content responsibility</h2>
+    <p>Contributors are responsible for ensuring they have the right to submit content. agentsweb.org operates as a passive cache and does not verify the copyright status of cached content.</p>
+
+    <h2>Abuse</h2>
+    <p>IPs that repeatedly submit rejected content are automatically banned. Persistent abuse may result in permanent blocking.</p>
+
+    <h2>Content removal</h2>
+    <p>Content owners may request immediate removal via the <a href="/dmca">DMCA &amp; Takedown</a> page.</p>
+
+    <p class="back"><a href="/">Back to agentsweb.org</a></p>
+  </div>
+</body>
+</html>`;
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
     },
   });
 }
@@ -814,9 +1024,21 @@ export default {
       if (method === "GET" && url.pathname === "/stats") {
         return await handleStats(env.CACHE);
       }
+
+      if (method === "POST" && url.pathname === "/takedown") {
+        return await handleTakedown(request, env.CACHE, ip);
+      }
+
+      if (method === "POST" && url.pathname === "/opt-out") {
+        return await handleOptOut(request, env.CACHE, ip);
+      }
     } catch {
       return json({ error: "internal error" }, 500);
     }
+
+    // Static pages
+    if (method === "GET" && url.pathname === "/dmca") return dmcaPage();
+    if (method === "GET" && url.pathname === "/terms") return termsPage();
 
     return json({ error: "not found" }, 404);
   },
