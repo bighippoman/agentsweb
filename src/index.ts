@@ -897,43 +897,89 @@ async function handleSearch(query: string, kv: KVNamespace, ip: string): Promise
 
 interface SearchResult { title: string; url: string; snippet: string; }
 
-async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip: string): Promise<Response> {
-  if (!(await checkRateLimit(kv, ip, "read"))) return json({ error: "rate limited" }, 429);
-  if (!query || query.length < 2 || query.length > 500) return json({ error: "query must be 2-500 characters" }, 400);
-  const safeCount = Math.min(Math.max(1, count || 5), 20);
+// SearXNG instances — race multiple, first good response wins
+const SEARXNG_INSTANCES = [
+  "https://search.sapti.me",
+  "https://searx.be",
+  "https://search.ononoki.org",
+  "https://searx.tiekoetter.com",
+  "https://search.bus-hit.me",
+];
 
-  // SearXNG
+async function searchSearxng(query: string, instance: string, count: number): Promise<SearchResult[] | null> {
   try {
-    const resp = await fetch(`https://search.sapti.me/search?q=${encodeURIComponent(query)}&format=json&categories=general&language=en`, { signal: AbortSignal.timeout(8_000) });
-    if (resp.ok) {
-      const data = (await resp.json()) as { results?: Array<{ title: string; url: string; content: string }> };
-      if (data.results?.length) {
-        incrementStat(kv, "searches");
-        return json({ query, results: data.results.slice(0, safeCount).map((r) => ({ title: r.title, url: r.url, snippet: r.content })), source: "searxng" });
-      }
-    }
-  } catch {}
+    const resp = await fetch(
+      `${instance}/search?q=${encodeURIComponent(query)}&format=json&categories=general&language=en`,
+      { signal: AbortSignal.timeout(6_000) }
+    );
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { results?: Array<{ title: string; url: string; content: string }> };
+    if (!data.results?.length) return null;
+    return data.results.slice(0, count).map((r) => ({ title: r.title || "", url: r.url || "", snippet: r.content || "" }));
+  } catch { return null; }
+}
 
-  // DDG fallback
+async function searchDDG(query: string, count: number): Promise<SearchResult[] | null> {
   try {
     const resp = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
       headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
       signal: AbortSignal.timeout(8_000),
     });
-    if (resp.ok) {
-      const html = await resp.text();
-      const results: SearchResult[] = [];
-      const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-      let m;
-      while ((m = re.exec(html)) && results.length < safeCount) {
-        const url = decodeURIComponent(m[1].replace(/.*uddg=/, "").replace(/&.*/, ""));
-        if (url.startsWith("http")) results.push({ title: m[2].replace(/<[^>]+>/g, "").trim(), url, snippet: "" });
-      }
-      if (results.length) { incrementStat(kv, "searches"); return json({ query, results, source: "duckduckgo" }); }
+    if (!resp.ok) return null;
+    const html = await resp.text();
+    const results: SearchResult[] = [];
+    const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    let m;
+    while ((m = re.exec(html)) && results.length < count) {
+      const url = decodeURIComponent(m[1].replace(/.*uddg=/, "").replace(/&.*/, ""));
+      if (url.startsWith("http")) results.push({ title: m[2].replace(/<[^>]+>/g, "").trim(), url, snippet: "" });
     }
-  } catch {}
+    return results.length ? results : null;
+  } catch { return null; }
+}
 
-  return json({ error: "search unavailable" }, 503);
+async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip: string): Promise<Response> {
+  if (!(await checkRateLimit(kv, ip, "read"))) return json({ error: "rate limited" }, 429);
+  if (!query || query.length < 2 || query.length > 500) return json({ error: "query must be 2-500 characters" }, 400);
+  const safeCount = Math.min(Math.max(1, count || 5), 20);
+
+  // Check search cache first (60s TTL)
+  const searchCacheKey = `search:${await hashContent(query.toLowerCase().trim())}`;
+  const cachedSearch = await kv.get(searchCacheKey);
+  if (cachedSearch) {
+    const cached = JSON.parse(cachedSearch) as SearchResult[];
+    incrementStat(kv, "searches");
+    return json({ query, results: cached.slice(0, safeCount), source: "cache" });
+  }
+
+  // Race ALL sources in parallel — first with results wins
+  const allSearches = [
+    // All SearXNG instances
+    ...SEARXNG_INSTANCES.map((inst) => searchSearxng(query, inst, safeCount).then((r) => r ? { results: r, source: inst.split("//")[1].split("/")[0] } : null)),
+    // DuckDuckGo
+    searchDDG(query, safeCount).then((r) => r ? { results: r, source: "duckduckgo" } : null),
+  ];
+
+  // Use Promise.any-like behavior: resolve with first non-null
+  const results = await Promise.allSettled(allSearches);
+
+  let best: { results: SearchResult[]; source: string } | null = null;
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value) {
+      if (!best || r.value.results.length > best.results.length) {
+        best = r.value;
+      }
+    }
+  }
+
+  if (best) {
+    // Cache search results for 60s
+    waitUntilBg(kv.put(searchCacheKey, JSON.stringify(best.results), { expirationTtl: 60 }));
+    incrementStat(kv, "searches");
+    return json({ query, results: best.results, source: best.source });
+  }
+
+  return json({ error: "search unavailable — all backends failed" }, 503);
 }
 
 // ============================================================
