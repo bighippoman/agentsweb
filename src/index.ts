@@ -338,8 +338,28 @@ async function hashContent(content: string): Promise<string> {
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function normalizeUrlForCache(url: string): string {
+  let u = url.toLowerCase().replace(/\/+$/, "");
+  // Normalize protocol to https
+  u = u.replace(/^http:\/\//, "https://");
+  // Strip www
+  u = u.replace(/^(https:\/\/)www\./, "$1");
+  // Strip common tracking params
+  try {
+    const parsed = new URL(u);
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (/^(utm_|fbclid|gclid|ref|mc_|_ga|msclkid)/.test(key)) {
+        parsed.searchParams.delete(key);
+      }
+    }
+    // Remove empty query string
+    u = parsed.toString().replace(/\?$/, "");
+  } catch {}
+  return u;
+}
+
 async function hashUrl(url: string): Promise<string> {
-  return hashContent(url.toLowerCase().replace(/\/+$/, "").replace(/^https?:\/\/www\./, "https://"));
+  return hashContent(normalizeUrlForCache(url));
 }
 
 function securityHeaders(): Record<string, string> {
@@ -424,14 +444,17 @@ function getTtl(trustLevel: number, url: string): number {
 }
 
 // ============================================================
-// Stats (non-blocking)
+// Stats (via waitUntil to survive after response)
 // ============================================================
 
+let _ctx: ExecutionContext | null = null;
+
 function incrementStat(kv: KVNamespace, stat: string): void {
-  kv.get(`stats:${stat}`).then((v) => {
+  const p = kv.get(`stats:${stat}`).then((v) => {
     const n = parseInt(v || "0", 10) + 1;
-    kv.put(`stats:${stat}`, String(n));
+    return kv.put(`stats:${stat}`, String(n));
   }).catch(() => {});
+  _ctx?.waitUntil(p);
 }
 
 // ============================================================
@@ -979,7 +1002,8 @@ function termsPage(): Response {
 // ============================================================
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    _ctx = ctx;
     const method = request.method;
     if (!["GET", "PUT", "POST", "OPTIONS", "HEAD"].includes(method)) {
       return json({ error: "method not allowed" }, 405);
