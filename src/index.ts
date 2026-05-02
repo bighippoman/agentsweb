@@ -1608,7 +1608,7 @@ By Mark Gurman. Clean markdown. Done.
     </div>
 
     <div class="footer">
-      <span><a href="/docs">docs</a> · <a href="/security">security</a> · <a href="/about">about</a> · <a href="/use-cases">use cases</a> · <a href="/compare">compare</a> · <a href="/how-it-works">how it works</a> · <a href="/faq">faq</a> · <a href="/integrations">integrations</a> · <a href="https://github.com/bighippoman/agentsweb">source</a> · <a href="/dmca">dmca</a> · <a href="/terms">terms</a></span>
+      <span><a href="/docs">docs</a> · <a href="/blog">blog</a> · <a href="/security">security</a> · <a href="/about">about</a> · <a href="/use-cases">use cases</a> · <a href="/compare">compare</a> · <a href="/faq">faq</a> · <a href="/integrations">integrations</a> · <a href="https://github.com/bighippoman/agentsweb">source</a> · <a href="/dmca">dmca</a> · <a href="/terms">terms</a></span>
       <span>${total.toLocaleString()} ops served</span>
     </div>
 
@@ -1736,7 +1736,7 @@ const PAGE_HEADERS = {
 };
 
 function makePage(title: string, body: string): Response {
-  const nav = `<div class="nav"><a href="/">agentsweb.org</a> / ${title.toLowerCase()} &nbsp; <span style="color:#3a3020">|</span> <a href="/docs">docs</a> · <a href="/about">about</a> · <a href="/use-cases">use cases</a> · <a href="/security">security</a> · <a href="/faq">faq</a></div>`;
+  const nav = `<div class="nav"><a href="/">agentsweb.org</a> / ${title.toLowerCase()} &nbsp; <span style="color:#3a3020">|</span> <a href="/docs">docs</a> · <a href="/blog">blog</a> · <a href="/about">about</a> · <a href="/security">security</a> · <a href="/faq">faq</a></div>`;
   return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — agentsweb.org</title><meta name="description" content="${title} — agentsweb.org. The internet, pre-read for AI agents. Open source markdown cache and web search API."><link rel="canonical" href="https://agentsweb.org/${title.toLowerCase().replace(/\s+/g,'-')}"><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold' fill='%23f0a050'>a</text></svg>"><style>${PAGE_STYLE}</style></head><body><div class="page">${nav}${body}<p class="back"><a href="/">&lt; back to agentsweb.org</a></p></div></body></html>`, { headers: PAGE_HEADERS });
 }
 
@@ -1941,6 +1941,48 @@ function aboutPage(): Response {
 // ============================================================
 // SEO / Marketing pages
 // ============================================================
+
+function blogPage(): Response {
+  return makePage("Blog", `
+    <h1>&gt; blog</h1>
+
+    <h2>may 2, 2026 — we built a shared internet for AI agents</h2>
+    <p>Every AI agent on earth fetches the same web pages independently. Same 403s. Same captchas. Same HTML-to-markdown conversion. Millions of times a day. We thought that was insane, so we fixed it.</p>
+    <p><strong>agentsweb.org</strong> is a global shared cache of web pages as clean markdown. The first agent to fetch a URL caches it at the edge. Every agent after gets it in under 50 milliseconds. The network gets smarter with every request.</p>
+    <p>But shared caches have a problem: <strong>poisoning.</strong> If anyone can write, anyone can lie. So we built a self-healing consensus engine. Entries gain trust as independent sources — verified by IP, not self-reported IDs — confirm the content. Poisoned entries self-destruct on the next legitimate read. An attacker would need to control multiple IP addresses AND produce content that passes 30+ prompt injection patterns, XSS filters, unicode steganography detection, and vocabulary analysis. And even if they did, trust decays on mismatch.</p>
+    <p>Good luck.</p>
+
+    <h2>the architecture</h2>
+    <p>It's a single Cloudflare Worker with a KV store. That's it. No databases, no containers, no Kubernetes. One file, deployed globally to 300+ edge locations.</p>
+    <p>When you search, 6 search backends race in parallel — 5 SearXNG instances plus DuckDuckGo. First with results wins. Results are cached for 5 minutes at the KV layer and 2 minutes at the edge.</p>
+    <p>When you fetch a URL, 6 content sources race in parallel — Jina Reader, Codetabs, Wayback Machine, Arquivo.pt, Google Cache, and raw fetch. The longest, highest-quality result wins. Content is validated against prompt injection, XSS, captcha patterns, login walls, and structural integrity checks. Then it's cached globally.</p>
+    <p>Three-tier caching on every read: edge cache (sub-1ms) → KV cache (~50ms) → live fetch (1-5s). At scale, most requests never touch a backend.</p>
+
+    <h2>the legal question</h2>
+    <p>Is caching the web legal? Yes — the same way Google Cache, CDN caches, and browser caches are legal. We operate under <strong>DMCA 512(b)</strong> (system caching safe harbor). The content is a transformative derivative (HTML → markdown) for a fundamentally different purpose (machine processing, not human reading). All entries expire. Content owners can request instant removal.</p>
+    <p>We chose .org deliberately. This is public interest infrastructure. No ads, no tracking, no VC, no paid tiers. Open source under MIT. The kind of thing that should just exist.</p>
+
+    <h2>what you can do with it</h2>
+    <p>One API call to search the web, fetch the results, and cache them as markdown:</p>
+    <p><code>curl agentsweb.org/research?q=react+server+components</code></p>
+    <p>That's it. No API keys. No authentication. No SDK required. Any HTTP client works.</p>
+    <p>For tighter integration, use <a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> (Node/MCP) or <code>pip install agentsweb</code> (Python). Both use agentsweb.org as tier 0 automatically.</p>
+
+    <h2>what's next</h2>
+    <p>The cache is live with ${">"}40 pages seeded. Every fetch from every intercept-mcp instance worldwide contributes back. The network effect kicks in as adoption grows — more agents means more cached pages means faster responses means more agents.</p>
+    <p>We're watching the stats. When the free tier limits start pinching, we'll scale. Cloudflare Workers paid plan is $5/month for 10 million requests. The whole thing can serve hundreds of thousands of daily users for the cost of a coffee.</p>
+    <p><a href="https://github.com/bighippoman/agentsweb">Star us on GitHub</a> if you think AI agents deserve a better internet.</p>
+
+    <h2>links</h2>
+    <ul>
+      <li><a href="https://github.com/bighippoman/agentsweb">agentsweb</a> — the Worker (this site)</li>
+      <li><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> — the MCP server</li>
+      <li><a href="https://github.com/bighippoman/agentsweb-python">agentsweb-python</a> — Python SDK</li>
+      <li><a href="/docs">API docs</a></li>
+      <li><a href="/security">Security architecture</a></li>
+    </ul>
+  `);
+}
 
 function useCasesPage(): Response {
   return makePage("Use Cases", `
@@ -2219,6 +2261,7 @@ function sitemapXml(): Response {
   const pages = [
     "",
     "/docs",
+    "/blog",
     "/about",
     "/security",
     "/dmca",
@@ -2435,6 +2478,7 @@ export default {
     if (method === "GET" && url.pathname === "/compare") return comparePage();
     if (method === "GET" && url.pathname === "/how-it-works") return howItWorksPage();
     if (method === "GET" && url.pathname === "/faq") return faqPage();
+    if (method === "GET" && url.pathname === "/blog") return blogPage();
     if (method === "GET" && url.pathname === "/integrations") return integrationsPage();
     if (method === "GET" && url.pathname === "/sitemap.xml") return sitemapXml();
 
