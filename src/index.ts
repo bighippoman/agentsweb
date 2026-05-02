@@ -1,3 +1,5 @@
+import { convertHtmlToMarkdown } from "./html-to-md.js";
+
 interface Env {
   CACHE: KVNamespace;
   ADMIN_SECRET: string;
@@ -1229,7 +1231,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
       (async (): Promise<{ markdown: string; source: string } | null> => {
         const resp = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10_000) });
         if (!resp.ok) return null;
-        const md = htmlToBasicMarkdown(await resp.text());
+        const md = convertHtmlToMarkdown(await resp.text());
         return md.length >= 200 ? { markdown: md, source: "codetabs" } : null;
       })(),
 
@@ -1243,7 +1245,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         const rawUrl = snap.url.replace(/\/web\/(\d+)\//, "/web/$1id_/");
         const pageResp = await fetch(rawUrl, { signal: AbortSignal.timeout(10_000) });
         if (!pageResp.ok) return null;
-        const md = htmlToBasicMarkdown(await pageResp.text());
+        const md = convertHtmlToMarkdown(await pageResp.text());
         return md.length >= 200 ? { markdown: md, source: "wayback" } : null;
       })(),
 
@@ -1259,7 +1261,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         const replayUrl = `https://arquivo.pt/noFrame/replay/${parsed.timestamp}id_/${parsed.url}`;
         const pageResp = await fetch(replayUrl, { signal: AbortSignal.timeout(12_000) });
         if (!pageResp.ok) return null;
-        const md = htmlToBasicMarkdown(await pageResp.text());
+        const md = convertHtmlToMarkdown(await pageResp.text());
         return md.length >= 200 ? { markdown: md, source: "arquivo" } : null;
       })(),
 
@@ -1274,7 +1276,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
           redirect: "follow",
         });
         if (!resp.ok) return null;
-        const md = htmlToBasicMarkdown(await resp.text());
+        const md = convertHtmlToMarkdown(await resp.text());
         return md.length >= 200 ? { markdown: md, source: "raw" } : null;
       })(),
 
@@ -1287,7 +1289,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         if (!resp.ok) return null;
         const html = await resp.text();
         if (html.toLowerCase().includes("unusual traffic") || html.toLowerCase().includes("captcha")) return null;
-        const md = htmlToBasicMarkdown(html);
+        const md = convertHtmlToMarkdown(html);
         return md.length >= 200 ? { markdown: md, source: "google-cache" } : null;
       })(),
     ]);
@@ -1325,98 +1327,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
   return null;
 }
 
-/**
- * Basic HTML to markdown - runs in Workers (no npm deps).
- * Strips scripts/styles/nav/footer, extracts text with basic formatting.
- */
-function htmlToBasicMarkdown(html: string): string {
-  let text = html;
-
-  // Try to extract article/main content first (most accurate)
-  const articleMatch = text.match(/<article[\s>][\s\S]*?<\/article>/i)
-    ?? text.match(/<main[\s>][\s\S]*?<\/main>/i)
-    ?? text.match(/<div[^>]*(?:class|id)="[^"]*(?:content|article|post|entry|main)[^"]*"[^>]*>[\s\S]*?<\/div>/i);
-  if (articleMatch) text = articleMatch[0];
-
-  // Strip noise elements
-  text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
-  text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
-  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, "");
-  text = text.replace(/<header[\s\S]*?<\/header>/gi, "");
-  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, "");
-  text = text.replace(/<aside[\s\S]*?<\/aside>/gi, "");
-  text = text.replace(/<noscript[\s\S]*?<\/noscript>/gi, "");
-  text = text.replace(/<svg[\s\S]*?<\/svg>/gi, "");
-  text = text.replace(/<button[\s\S]*?<\/button>/gi, "");
-  text = text.replace(/<form[\s\S]*?<\/form>/gi, "");
-  text = text.replace(/<iframe[\s\S]*?<\/iframe>/gi, "");
-  text = text.replace(/<!--[\s\S]*?-->/g, ""); // HTML comments
-
-  // Convert headings (h1-h6)
-  text = text.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n# $1\n");
-  text = text.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n## $1\n");
-  text = text.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n### $1\n");
-  text = text.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, "\n#### $1\n");
-  text = text.replace(/<h5[^>]*>([\s\S]*?)<\/h5>/gi, "\n##### $1\n");
-  text = text.replace(/<h6[^>]*>([\s\S]*?)<\/h6>/gi, "\n###### $1\n");
-
-  // Convert code blocks
-  text = text.replace(/<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, "\n```\n$1\n```\n");
-  text = text.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, "\n```\n$1\n```\n");
-  text = text.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`");
-
-  // Convert links (preserve href)
-  text = text.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)");
-
-  // Convert images
-  text = text.replace(/<img[^>]+alt="([^"]*)"[^>]+src="([^"]*)"[^>]*\/?>/gi, "![$1]($2)");
-  text = text.replace(/<img[^>]+src="([^"]*)"[^>]*\/?>/gi, "![]($1)");
-
-  // Convert bold/italic/strikethrough
-  text = text.replace(/<(strong|b)>([\s\S]*?)<\/\1>/gi, "**$2**");
-  text = text.replace(/<(em|i)>([\s\S]*?)<\/\1>/gi, "*$2*");
-  text = text.replace(/<(del|s|strike)>([\s\S]*?)<\/\1>/gi, "~~$2~~");
-
-  // Convert blockquotes
-  text = text.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
-    return content.split("\n").map((l: string) => "> " + l.trim()).join("\n") + "\n";
-  });
-
-  // Convert tables
-  text = text.replace(/<th[^>]*>([\s\S]*?)<\/th>/gi, "| $1 ");
-  text = text.replace(/<td[^>]*>([\s\S]*?)<\/td>/gi, "| $1 ");
-  text = text.replace(/<\/tr>/gi, "|\n");
-
-  // Convert lists
-  text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n");
-
-  // Convert horizontal rules
-  text = text.replace(/<hr[^>]*\/?>/gi, "\n---\n");
-
-  // Convert line breaks and paragraphs
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-  text = text.replace(/<\/(p|div|tr|blockquote|section|article)>/gi, "\n\n");
-
-  // Strip remaining tags
-  text = text.replace(/<[^>]+>/g, "");
-
-  // Decode entities
-  text = text
-    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ")
-    .replace(/&mdash;/g, "—").replace(/&ndash;/g, "–").replace(/&hellip;/g, "...")
-    .replace(/&lsquo;/g, "'").replace(/&rsquo;/g, "'")
-    .replace(/&ldquo;/g, "\u201C").replace(/&rdquo;/g, "\u201D")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCharCode(parseInt(n, 16)));
-
-  // Clean whitespace
-  text = text.replace(/[^\S\n]+/g, " ");
-  text = text.replace(/\n{3,}/g, "\n\n");
-  text = text.replace(/^\s+/gm, (match) => match.includes("\n") ? "\n" : "");
-
-  return text.trim();
-}
+// htmlToBasicMarkdown removed — replaced by convertHtmlToMarkdown from html-to-md.ts
 
 // ============================================================
 // Fetch on demand — give URL, get markdown, auto-cached
