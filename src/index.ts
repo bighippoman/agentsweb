@@ -154,10 +154,12 @@ function validateContent(markdown: string): string | null {
     if (p.test(head)) return "login wall detected";
   }
 
-  // Strip code blocks before scanning — docs legitimately contain <script>, onclick, etc.
+  // Strip code blocks AND HTML tags before scanning — docs legitimately contain
+  // <script>, onclick, etc. in code examples and raw HTML dumps
   const stripped = markdown
-    .replace(/```[\s\S]*?```/g, "")  // fenced code blocks
-    .replace(/`[^`]+`/g, "");        // inline code
+    .replace(/```[\s\S]*?```/g, "")        // fenced code blocks
+    .replace(/`[^`]+`/g, "")              // inline code
+    .replace(/<[^>]+>/g, "");             // HTML tags (from raw HTML content)
 
   // Scan broadly for injection
   const scanRegion = stripped.slice(0, 10_000);
@@ -395,11 +397,10 @@ function securityHeaders(): Record<string, string> {
   };
 }
 
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...securityHeaders() },
-  });
+function json(data: unknown, status = 200, etag?: string): Response {
+  const headers: Record<string, string> = { "Content-Type": "application/json; charset=utf-8", ...securityHeaders() };
+  if (etag) headers["ETag"] = etag;
+  return new Response(JSON.stringify(data), { status, headers });
 }
 
 // ============================================================
@@ -460,6 +461,7 @@ function getTtl(trustLevel: number, url: string): number {
 // ============================================================
 
 let _ctx: ExecutionContext | null = null;
+let _request: Request | null = null;
 
 function incrementStat(kv: KVNamespace, stat: string): void {
   const p = kv.get(`stats:${stat}`).then((v) => {
@@ -501,13 +503,20 @@ async function handleRead(url: string, kv: KVNamespace, ip: string): Promise<Res
 
   incrementStat(kv, "hits");
 
+  // ETag support — skip sending body if client has current version
+  const etag = `"${entry.content_hash.slice(0, 16)}"`;
+  const ifNoneMatch = _request?.headers.get("If-None-Match");
+  if (ifNoneMatch === etag) {
+    return new Response(null, { status: 304, headers: { ETag: etag, ...securityHeaders() } });
+  }
+
   return json({
     url: entry.url,
     markdown: entry.markdown,
     trust_level: entry.trust_level,
     source: entry.source,
     age_seconds: Math.floor((Date.now() - entry.updated_at) / 1000),
-  });
+  }, 200, etag);
 }
 
 async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admin = false): Promise<Response> {
@@ -608,6 +617,20 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
   });
 
   incrementStat(kv, "writes");
+
+  // Maintain URL index for search
+  _ctx?.waitUntil((async () => {
+    const indexRaw = await kv.get("index:urls");
+    const urls: string[] = indexRaw ? JSON.parse(indexRaw) : [];
+    const normalized = normalizeUrlForCache(url);
+    if (!urls.includes(normalized)) {
+      urls.push(normalized);
+      // Keep index bounded
+      if (urls.length > 10_000) urls.splice(0, urls.length - 10_000);
+      await kv.put("index:urls", JSON.stringify(urls));
+    }
+  })());
+
   return json({ status: "accepted", trust_level: 1 });
 }
 
@@ -659,6 +682,75 @@ async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string, 
   }
 
   return json({ status: "mismatch", trust_level: entry.trust_level });
+}
+
+// ============================================================
+// Batch read — fetch multiple URLs in one request
+// ============================================================
+
+async function handleBatch(urlParam: string, kv: KVNamespace, ip: string): Promise<Response> {
+  if (!(await checkRateLimit(kv, ip, "read"))) {
+    return json({ error: "rate limited" }, 429);
+  }
+
+  const urls = urlParam.split(",").map((u) => u.trim()).filter(Boolean).slice(0, 20); // max 20
+  if (!urls.length) return json({ error: "urls required (comma-separated)" }, 400);
+
+  const results: Record<string, unknown> = {};
+
+  await Promise.all(urls.map(async (url) => {
+    const urlErr = validateUrl(url);
+    if (urlErr) { results[url] = { status: "error", error: urlErr }; return; }
+
+    const urlHash = await hashUrl(url);
+    const dmcaFlag = await kv.get(`dmca:${urlHash}`);
+    if (dmcaFlag) { results[url] = { status: "dmca" }; return; }
+
+    const raw = await kv.get(`cache:${urlHash}`);
+    if (!raw) { results[url] = { status: "miss" }; return; }
+
+    try {
+      const entry: CacheEntry = JSON.parse(raw);
+      results[url] = {
+        status: "hit",
+        markdown: entry.markdown,
+        trust_level: entry.trust_level,
+        source: entry.source,
+        age_seconds: Math.floor((Date.now() - entry.updated_at) / 1000),
+      };
+      incrementStat(kv, "hits");
+    } catch {
+      results[url] = { status: "miss" };
+    }
+  }));
+
+  return json({ results });
+}
+
+// ============================================================
+// Search cached pages by domain
+// ============================================================
+
+async function handleSearch(query: string, kv: KVNamespace, ip: string): Promise<Response> {
+  if (!(await checkRateLimit(kv, ip, "read"))) {
+    return json({ error: "rate limited" }, 429);
+  }
+
+  if (!query || query.length < 2 || query.length > 200) {
+    return json({ error: "query must be 2-200 characters" }, 400);
+  }
+
+  // KV doesn't support search, so we maintain a URL index
+  const indexRaw = await kv.get("index:urls");
+  if (!indexRaw) return json({ results: [], query });
+
+  const allUrls: string[] = JSON.parse(indexRaw);
+  const q = query.toLowerCase();
+  const matches = allUrls
+    .filter((u) => u.toLowerCase().includes(q))
+    .slice(0, 20);
+
+  return json({ results: matches, query, total: matches.length });
 }
 
 async function handleStats(kv: KVNamespace): Promise<Response> {
@@ -758,14 +850,44 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     <div class="section">
       <h2>API</h2>
       <div class="ep"><span class="m mg">GET</span><span class="ep-p">/?url={url}</span><span class="ep-d">Read cached markdown</span></div>
+      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/batch?urls={url1},{url2}</span><span class="ep-d">Batch read (up to 20)</span></div>
+      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/search?q={query}</span><span class="ep-d">Search cached URLs</span></div>
       <div class="ep"><span class="m mp">PUT</span><span class="ep-p">/</span><span class="ep-d">Contribute markdown</span></div>
       <div class="ep"><span class="m mb">POST</span><span class="ep-p">/confirm</span><span class="ep-d">Confirm entry integrity</span></div>
       <div class="ep"><span class="m mg">GET</span><span class="ep-p">/stats</span><span class="ep-d">Live statistics</span></div>
     </div>
 
-    <div class="section curl">
+    <div class="section">
       <h2>Try it</h2>
-      <code>curl "https://agentsweb.org/?url=https://example.com"</code>
+      <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem">
+        <input id="tryUrl" type="text" placeholder="https://react.dev/learn" value="https://react.dev/learn" style="flex:1;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:0.6rem 0.8rem;color:#fff;font-family:monospace;font-size:0.85rem;outline:none">
+        <button onclick="tryFetch()" style="background:#1a3a2a;color:#4ade80;border:1px solid #2a4a3a;border-radius:6px;padding:0.6rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.85rem">Fetch</button>
+      </div>
+      <pre id="tryResult" style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:6px;padding:0.75rem 1rem;color:#888;font-family:monospace;font-size:0.8rem;max-height:300px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+      <script>
+        async function tryFetch() {
+          const url = document.getElementById('tryUrl').value;
+          const el = document.getElementById('tryResult');
+          el.style.display = 'block';
+          el.textContent = 'Loading...';
+          try {
+            const r = await fetch('/?url=' + encodeURIComponent(url));
+            const d = await r.json();
+            if (d.markdown) {
+              el.textContent = 'trust: ' + d.trust_level + ' | source: ' + d.source + ' | ' + d.markdown.length + ' chars\\n\\n' + d.markdown.slice(0, 2000) + (d.markdown.length > 2000 ? '\\n\\n... (' + d.markdown.length + ' chars total)' : '');
+            } else {
+              el.textContent = JSON.stringify(d, null, 2);
+            }
+          } catch (e) { el.textContent = 'Error: ' + e.message; }
+        }
+      </script>
+    </div>
+
+    <div class="section">
+      <h2>SDKs</h2>
+      <div class="ep"><span class="m mg" style="background:#2a1a0a;color:#fbbf24;min-width:52px">Node</span><span class="ep-p">npx -y intercept-mcp</span><span class="ep-d">Built-in (tier 0)</span></div>
+      <div class="ep"><span class="m mg" style="background:#0a1a2a;color:#60a5fa;min-width:52px">Python</span><span class="ep-p">pip install agentsweb</span><span class="ep-d"><a href="https://github.com/bighippoman/agentsweb-python">source</a></span></div>
+      <div class="ep"><span class="m mg" style="background:#1a1a1a;color:#999;min-width:52px">curl</span><span class="ep-p">curl "https://agentsweb.org/?url=..."</span><span class="ep-d">Any language</span></div>
     </div>
 
     <div class="section">
@@ -799,7 +921,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
       "Referrer-Policy": "no-referrer",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
       "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
       "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
       "Cache-Control": "public, max-age=60",
@@ -1013,8 +1135,57 @@ function termsPage(): Response {
 // ============================================================
 
 export default {
+  // Cache warming cron — refreshes entries approaching expiry
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    _ctx = ctx;
+    const kv = env.CACHE;
+
+    // Get URL index
+    const indexRaw = await kv.get("index:urls");
+    if (!indexRaw) return;
+    const urls: string[] = JSON.parse(indexRaw);
+
+    // Check a random sample (10 URLs per cron run)
+    const sample = urls.sort(() => Math.random() - 0.5).slice(0, 10);
+
+    for (const url of sample) {
+      const key = `cache:${await hashUrl(url)}`;
+      const raw = await kv.get(key);
+      if (!raw) continue; // already expired, nothing to warm
+
+      try {
+        const entry: CacheEntry = JSON.parse(raw);
+        const age = Date.now() - entry.updated_at;
+        const ttl = getTtl(entry.trust_level, entry.url) * 1000;
+
+        // Refresh if more than 75% through TTL
+        if (age > ttl * 0.75) {
+          // Re-fetch via Jina
+          const resp = await fetch(`https://r.jina.ai/${entry.url}`, {
+            headers: { Accept: "text/markdown" },
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (!resp.ok) continue;
+          const markdown = await resp.text();
+          if (markdown.length < 200) continue;
+
+          const contentHash = await hashContent(markdown);
+          entry.markdown = markdown;
+          entry.content_hash = contentHash;
+          entry.updated_at = Date.now();
+          entry.size = markdown.length;
+
+          await kv.put(key, JSON.stringify(entry), {
+            expirationTtl: getTtl(entry.trust_level, entry.url),
+          });
+        }
+      } catch { /* skip failures */ }
+    }
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     _ctx = ctx;
+    _request = request;
     const admin = isAdmin(request, env);
     const method = request.method;
     if (!["GET", "PUT", "POST", "OPTIONS", "HEAD"].includes(method)) {
@@ -1043,6 +1214,15 @@ export default {
     if (method === "POST" && url.pathname === "/admin/purge-ban" && admin) {
       await env.CACHE.delete(`abuse:${ip}`);
       return json({ status: "ban cleared", ip });
+    }
+
+    // Admin: rebuild URL index from a list of known URLs
+    if (method === "POST" && url.pathname === "/admin/rebuild-index" && admin) {
+      const body = await parseBody<{ urls: string[] }>(request);
+      if (!body?.urls?.length) return json({ error: "urls array required" }, 400);
+      const normalized = body.urls.map(normalizeUrlForCache);
+      await env.CACHE.put("index:urls", JSON.stringify(normalized));
+      return json({ status: "index rebuilt", count: normalized.length });
     }
 
     // Admin: clear all bans for a specific IP
@@ -1075,6 +1255,14 @@ export default {
 
       if (method === "GET" && url.pathname === "/stats") {
         return await handleStats(env.CACHE);
+      }
+
+      if (method === "GET" && url.pathname === "/batch" && url.searchParams.has("urls")) {
+        return await handleBatch(url.searchParams.get("urls")!, env.CACHE, ip);
+      }
+
+      if (method === "GET" && url.pathname === "/search" && url.searchParams.has("q")) {
+        return await handleSearch(url.searchParams.get("q")!, env.CACHE, ip);
       }
 
       if (method === "POST" && url.pathname === "/takedown") {

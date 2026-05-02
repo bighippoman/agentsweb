@@ -16,3 +16,7 @@ custom_domain = true
 [[kv_namespaces]]
 binding = "CACHE"
 id = "fa20a13348bf4f0ab7289dbad534ec11"
+
+# Cache warming cron — runs every 6 hours, refreshes 10 random entries approaching expiry
+[triggers]
+crons = ["0 */6 * * *"]
