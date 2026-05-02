@@ -1296,7 +1296,11 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
   <meta property="og:description" content="Search, fetch, and cache the web as clean markdown. One API call. Sub-50ms. Self-healing. Open source.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://agentsweb.org">
-  <meta name="twitter:card" content="summary">
+  <meta property="og:image" content="https://agentsweb.org/og.svg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://agentsweb.org/og.svg">
   <meta name="twitter:title" content="agentsweb.org — The internet, but for AI agents">
   <meta name="twitter:description" content="Your AI agent's internet. Search, fetch, cache — clean markdown, sub-50ms, self-healing consensus.">
 
@@ -1385,7 +1389,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
 <body>
   <div class="wrap">
 
-    <div class="logo">agentsweb<span>.org</span><span class="cursor"></span></div>
+    <h1 class="logo">agentsweb<span>.org</span><span class="cursor"></span></h1>
     <p class="tagline">The internet, but for robots. Search it. Read it. Cache it.<br>Your AI agent's web — <em>pre-chewed into clean markdown</em> so it doesn't have to fight captchas like some kind of animal.</p>
 
     <div class="compare">
@@ -1481,6 +1485,20 @@ By Mark Gurman. Clean markdown. Done.
         }
         document.getElementById('tryQ').addEventListener('keydown', function(e) { if (e.key === 'Enter') tryIt(); });
       </script>
+    </div>
+
+    <div class="section">
+      <h2>&gt; what is agentsweb.org</h2>
+      <p>agentsweb.org is <strong>open public infrastructure</strong> that gives AI agents the ability to search, read, and understand the web. It's a global shared cache of web pages converted to clean markdown — the format AI models actually work with.</p>
+      <p>Think of it like DNS, but for content. DNS resolves names to IP addresses. agentsweb resolves URLs to clean, readable markdown. It sits between your AI agent and the messy web, handling the captchas, the 403s, the raw HTML, the bot detection — so your agent doesn't have to.</p>
+      <p>Every page that any agent fetches gets cached at the edge. The next agent that needs the same page gets it in under 50 milliseconds, from whichever Cloudflare data center is closest. The more agents use it, the faster it gets for everyone.</p>
+    </div>
+
+    <div class="section">
+      <h2>&gt; how is it different</h2>
+      <p><strong>It's not a scraper.</strong> Scrapers hit one site at a time. agentsweb is a shared network — one agent's work benefits every other agent.</p>
+      <p><strong>It's not just a proxy.</strong> Proxies forward requests. agentsweb converts HTML to markdown, caches it globally, validates it against prompt injection, and builds consensus trust across independent sources.</p>
+      <p><strong>It's not a paid API.</strong> No API keys. No rate-limit tiers. No pricing page. Free, open source, public infrastructure. Like Wikipedia for web content, maintained by the agents that use it.</p>
     </div>
 
     <div class="section">
@@ -1656,7 +1674,8 @@ const PAGE_HEADERS = {
 };
 
 function makePage(title: string, body: string): Response {
-  return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — agentsweb.org</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold'>a</text></svg>"><style>${PAGE_STYLE}</style></head><body><div class="page"><div class="nav"><a href="/">agentsweb.org</a> / ${title.toLowerCase()}</div>${body}<p class="back"><a href="/">&lt; back</a></p></div></body></html>`, { headers: PAGE_HEADERS });
+  const nav = `<div class="nav"><a href="/">agentsweb.org</a> / ${title.toLowerCase()} &nbsp; <span style="color:#3a3020">|</span> <a href="/docs">docs</a> · <a href="/about">about</a> · <a href="/use-cases">use cases</a> · <a href="/security">security</a> · <a href="/faq">faq</a></div>`;
+  return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — agentsweb.org</title><meta name="description" content="${title} — agentsweb.org. The internet, pre-read for AI agents. Open source markdown cache and web search API."><link rel="canonical" href="https://agentsweb.org/${title.toLowerCase().replace(/\s+/g,'-')}"><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold'>a</text></svg>"><style>${PAGE_STYLE}</style></head><body><div class="page">${nav}${body}<p class="back"><a href="/">&lt; back to agentsweb.org</a></p></div></body></html>`, { headers: PAGE_HEADERS });
 }
 
 function dmcaPage(): Response {
@@ -2327,6 +2346,21 @@ export default {
       }
     } catch {
       return json({ error: "internal error" }, 500);
+    }
+
+    // OG image
+    if (method === "GET" && url.pathname === "/og.svg") {
+      return new Response(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630"><rect fill="#0c0c0c" width="1200" height="630"/><text x="80" y="200" font-family="monospace" font-size="72" font-weight="bold" fill="#f0a050">agentsweb.org</text><text x="80" y="290" font-family="monospace" font-size="28" fill="#888">The internet, but for AI agents.</text><text x="80" y="370" font-family="monospace" font-size="22" fill="#666">Search. Fetch. Cache. Clean markdown.</text><text x="80" y="420" font-family="monospace" font-size="22" fill="#666">Sub-50ms reads. Self-healing consensus.</text><text x="80" y="540" font-family="monospace" font-size="18" fill="#4a4030">open source · no API keys · agentsweb.org</text></svg>`,
+        { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" } }
+      );
+    }
+
+    // robots.txt
+    if (method === "GET" && url.pathname === "/robots.txt") {
+      return new Response(
+        `User-agent: *\nAllow: /\n\nSitemap: https://agentsweb.org/sitemap.xml\n`,
+        { headers: { "Content-Type": "text/plain", ...securityHeaders() } }
+      );
     }
 
     // Static pages
