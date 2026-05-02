@@ -171,9 +171,16 @@ function validateContent(markdown: string): string | null {
     .replace(/<[^>]+>/g, "");             // HTML tags (from raw HTML content)
 
   // Scan FULL document for injection — no blind spots
+  // But only flag if multiple patterns match (single hit could be legitimate
+  // content ABOUT injection, e.g., Wikipedia articles about AI safety)
+  let injectionHits = 0;
   for (const p of PROMPT_INJECTION_PATTERNS) {
-    if (p.test(stripped)) return "prompt injection detected";
+    if (p.test(stripped)) injectionHits++;
   }
+  // Single pattern match in a long doc = likely discussing the topic
+  // 3+ matches = likely actual injection attempt
+  const injectionThreshold = stripped.length > 10_000 ? 3 : 1;
+  if (injectionHits >= injectionThreshold) return "prompt injection detected";
 
   // Malicious content check (outside code blocks only, first 20KB)
   const maliciousScan = stripped.slice(0, 20_000);
@@ -1416,7 +1423,7 @@ function extractPartialContent(markdown: string, url: string): string | null {
   return before + "\n\n---\n*[Content truncated — full article requires subscription at original source]*";
 }
 
-async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string): Promise<Response> {
+async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string, forceRefresh = false): Promise<Response> {
   const urlErr = validateUrl(url);
   if (urlErr) return json({ error: urlErr }, 400);
   if (!(await checkRateLimit(kv, ip, "write"))) return json({ error: "rate limited" }, 429);
@@ -1425,13 +1432,15 @@ async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string): Pr
   const urlHash = await hashUrl(url);
   if (await kv.get(`dmca:${urlHash}`)) return json({ error: "removed per DMCA notice" }, 451);
 
-  const raw = await kv.get(`cache:${urlHash}`);
-  if (raw) {
-    try {
-      const entry: CacheEntry = JSON.parse(raw);
-      incrementStat(kv, "hits");
-      return json({ url: entry.url, markdown: entry.markdown, trust_level: entry.trust_level, source: `cache (${entry.source})`, fresh: false });
-    } catch {}
+  if (!forceRefresh) {
+    const raw = await kv.get(`cache:${urlHash}`);
+    if (raw) {
+      try {
+        const entry: CacheEntry = JSON.parse(raw);
+        incrementStat(kv, "hits");
+        return json({ url: entry.url, markdown: entry.markdown, trust_level: entry.trust_level, source: `cache (${entry.source})`, fresh: false });
+      } catch {}
+    }
   }
 
   const result = await fetchMarkdownLive(url);
@@ -2667,7 +2676,8 @@ export default {
 
       // Fetch on demand — give URL, get markdown, auto-cached
       if (method === "GET" && url.pathname === "/fetch" && url.searchParams.has("url")) {
-        return await handleFetchAndCache(url.searchParams.get("url")!, env.CACHE, ip);
+        const forceRefresh = url.searchParams.get("refresh") === "true" && admin;
+        return await handleFetchAndCache(url.searchParams.get("url")!, env.CACHE, ip, forceRefresh);
       }
 
       if (method === "POST" && url.pathname === "/takedown") {
