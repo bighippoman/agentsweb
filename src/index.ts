@@ -105,9 +105,15 @@ const CAPTCHA_PATTERNS = [
   /checking\s+your\s+browser/i,
   /ray\s+id:/i,
   /are\s+you\s+a\s+robot/i,
-  /unusual\s+traffic/i,
+  /not\s+a\s+robot/i,
+  /unusual\s+(traffic|activity)/i,
+  /detected\s+unusual/i,
   /security\s+check\s+to\s+access/i,
   /please\s+verify\s+you\s+are\s+human/i,
+  /click\s+the\s+box\s+below/i,
+  /access\s+denied/i,
+  /blocked\s+your\s+(ip|access)/i,
+  /enable\s+javascript\s+and\s+cookies/i,
 ];
 
 const LOGIN_WALL_PATTERNS = [
@@ -148,12 +154,13 @@ function validateContent(markdown: string): string | null {
   const invisibleCount = (markdown.match(/[\u200B-\u200F\u2060-\u2064\uFEFF]/g) || []).length;
   if (invisibleCount / markdown.length > ZERO_WIDTH_DENSITY_THRESHOLD) return "suspicious unicode";
 
-  const head = markdown.slice(0, 500);
+  // Check for captcha/wall — but scan more broadly (not just first 500 chars)
+  const scanHead = markdown.slice(0, 2000);
   for (const p of CAPTCHA_PATTERNS) {
-    if (p.test(head)) return "captcha detected";
+    if (p.test(scanHead)) return "captcha detected";
   }
   for (const p of LOGIN_WALL_PATTERNS) {
-    if (p.test(head)) return "login wall detected";
+    if (p.test(scanHead)) return "login wall detected";
   }
 
   // Strip code blocks AND HTML tags before scanning — docs legitimately contain
@@ -1374,6 +1381,41 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
 // Fetch on demand — give URL, get markdown, auto-cached
 // ============================================================
 
+/**
+ * Extract partial content from a paywalled/walled page.
+ * Returns the publicly visible portion (title, lede, first paragraphs)
+ * with a [Paywalled] marker so agents know it's incomplete.
+ */
+function extractPartialContent(markdown: string, url: string): string | null {
+  // Find where the wall starts
+  const wallPatterns = [
+    /subscribe\s+to\s+(read|continue)/i,
+    /this\s+(article|content)\s+is\s+for\s+subscribers/i,
+    /sign\s+in\s+to\s+continue/i,
+    /create\s+an\s+account/i,
+    /please\s+(log|sign)\s+in/i,
+    /unlock\s+access/i,
+    /start\s+your\s+free\s+trial/i,
+    /already\s+a\s+subscriber/i,
+    /members?\s+only/i,
+    /premium\s+content/i,
+  ];
+
+  let wallIndex = markdown.length;
+  for (const p of wallPatterns) {
+    const match = markdown.search(p);
+    if (match > 0 && match < wallIndex) wallIndex = match;
+  }
+
+  // Get content before the wall
+  const before = markdown.slice(0, wallIndex).trim();
+
+  // Only useful if we got at least 200 chars of real content
+  if (before.length < 200) return null;
+
+  return before + "\n\n---\n*[Content truncated — full article requires subscription at original source]*";
+}
+
 async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string): Promise<Response> {
   const urlErr = validateUrl(url);
   if (urlErr) return json({ error: urlErr }, 400);
@@ -1395,15 +1437,29 @@ async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string): Pr
   const result = await fetchMarkdownLive(url);
   if (!result) return json({ error: "all fetchers failed" }, 502);
 
-  const rejection = validateContent(result.markdown);
-  if (rejection) return json({ error: rejection }, 422);
+  let markdown = result.markdown;
+  const rejection = validateContent(markdown);
+  if (rejection) {
+    // If it's a login wall, try extracting partial content before rejecting
+    if (rejection === "login wall detected") {
+      const partial = extractPartialContent(markdown, url);
+      if (partial) {
+        markdown = partial;
+        result.source += " (partial)";
+      } else {
+        return json({ error: rejection }, 422);
+      }
+    } else {
+      return json({ error: rejection }, 422);
+    }
+  }
 
-  const contentHash = await hashContent(result.markdown);
+  const contentHash = await hashContent(markdown);
   const ipHash = (await hashContent(ip)).slice(0, 16);
-  const entry: CacheEntry = { url, markdown: result.markdown, trust_level: 1, source: result.source, created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: result.markdown.length, contributors: [ipHash] };
+  const entry: CacheEntry = { url, markdown, trust_level: 1, source: result.source, created_at: Date.now(), updated_at: Date.now(), content_hash: contentHash, size: markdown.length, contributors: [ipHash] };
   await kv.put(`cache:${urlHash}`, JSON.stringify(entry), { expirationTtl: getTtl(1, url) });
   incrementStat(kv, "writes");
-  return json({ url, markdown: result.markdown, trust_level: 1, source: `fresh (${result.source})`, fresh: true });
+  return json({ url, markdown, trust_level: 1, source: `fresh (${result.source})`, fresh: true });
 }
 
 // ============================================================
@@ -2547,6 +2603,15 @@ export default {
       const normalized = validated.map(normalizeUrlForCache);
       await env.CACHE.put("index:urls", JSON.stringify(normalized));
       return json({ status: "index rebuilt", count: normalized.length });
+    }
+
+    // Admin: clear DMCA flag
+    if (method === "POST" && url.pathname === "/admin/clear-dmca" && admin) {
+      const body = await parseBody<{ url: string }>(request);
+      if (!body?.url) return json({ error: "url required" }, 400);
+      const dmcaHash = await hashUrl(body.url);
+      await env.CACHE.delete(`dmca:${dmcaHash}`);
+      return json({ status: "dmca flag cleared", url: body.url });
     }
 
     // Admin: rebuild search index from provided entries
