@@ -1021,12 +1021,14 @@ async function handleStats(kv: KVNamespace): Promise<Response> {
 // ============================================================
 
 async function landingPage(kv: KVNamespace): Promise<Response> {
-  const [hits, writes, rejected] = await Promise.all([
+  const [hits, writes, rejected, searches] = await Promise.all([
     kv.get("stats:hits").then((v) => parseInt(v || "0", 10)),
     kv.get("stats:writes").then((v) => parseInt(v || "0", 10)),
     kv.get("stats:rejected").then((v) => parseInt(v || "0", 10)),
+    kv.get("stats:searches").then((v) => parseInt(v || "0", 10)),
   ]);
 
+  const total = writes + hits + searches;
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1051,163 +1053,244 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
   <!-- Structured data -->
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebAPI","name":"agentsweb.org","description":"Global shared cache and search API for AI agents. Serves web pages as clean markdown.","url":"https://agentsweb.org","provider":{"@type":"Organization","name":"agentsweb"},"documentation":"https://github.com/bighippoman/agentsweb"}</script>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
-    .hero { max-width: 720px; margin: 0 auto; padding: 4rem 2rem 2rem; }
-    h1 { font-size: 2.5rem; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
-    .tagline { color: #888; font-size: 1.2rem; margin: 0.75rem 0 2rem; line-height: 1.5; }
-    .stats { display: flex; gap: 1.25rem; margin-bottom: 2.5rem; }
-    .stat { background: #111; border: 1px solid #222; border-radius: 10px; padding: 1.25rem 1.5rem; flex: 1; }
-    .stat-value { font-size: 1.8rem; font-weight: 700; color: #fff; font-variant-numeric: tabular-nums; }
-    .stat-label { color: #666; font-size: 0.8rem; margin-top: 0.25rem; }
-    .install { background: #111; border: 1px solid #222; border-radius: 10px; padding: 1.5rem; margin-bottom: 2.5rem; }
-    .install-label { color: #888; font-size: 0.85rem; margin-bottom: 0.75rem; }
-    .install code { background: #0d0d0d; color: #4ade80; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.95rem; display: block; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid #1a1a1a; overflow-x: auto; }
-    h2 { font-weight: 600; color: #fff; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.8rem; margin-bottom: 1rem; }
+    body { font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace; background: #000; color: #33ff33; min-height: 100vh; }
+    ::selection { background: #33ff33; color: #000; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 3rem 2rem 2rem; }
+
+    /* Scanline overlay */
+    body::after { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,255,0,0.03) 2px, rgba(0,255,0,0.03) 4px); pointer-events: none; z-index: 999; }
+
+    .logo { font-size: 2.2rem; font-weight: 800; color: #33ff33; margin-bottom: 0.25rem; }
+    .logo span { color: #0a0; }
+    .tagline { color: #1a9a1a; font-size: 1rem; margin-bottom: 2rem; line-height: 1.6; }
+    .tagline em { color: #33ff33; font-style: normal; }
+
+    /* Blinking cursor */
+    .cursor { display: inline-block; width: 10px; height: 1.1em; background: #33ff33; animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 2px; }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* Before/After */
+    .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 2.5rem; }
+    .compare-box { border: 1px solid #1a1a1a; border-radius: 6px; padding: 1rem; font-size: 0.75rem; line-height: 1.5; }
+    .compare-bad { border-color: #330000; background: #0a0000; color: #ff4444; }
+    .compare-good { border-color: #003300; background: #000a00; color: #33ff33; }
+    .compare-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; display: block; }
+    .compare-bad .compare-label { color: #ff6666; }
+    .compare-good .compare-label { color: #66ff66; }
+
+    /* Stats */
+    .stats { display: flex; gap: 1rem; margin-bottom: 2.5rem; }
+    .stat { flex: 1; border: 1px solid #1a3a1a; border-radius: 6px; padding: 1rem; text-align: center; }
+    .stat-n { font-size: 1.6rem; font-weight: 700; color: #33ff33; }
+    .stat-l { font-size: 0.65rem; color: #1a7a1a; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 0.2rem; }
+
+    /* Terminal block */
+    .term { background: #0a0a0a; border: 1px solid #1a3a1a; border-radius: 8px; margin-bottom: 2rem; overflow: hidden; }
+    .term-bar { background: #0f1a0f; padding: 0.4rem 0.8rem; display: flex; gap: 0.4rem; align-items: center; }
+    .term-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .term-dot:nth-child(1) { background: #ff5f57; }
+    .term-dot:nth-child(2) { background: #febc2e; }
+    .term-dot:nth-child(3) { background: #28c840; }
+    .term-title { margin-left: 0.5rem; font-size: 0.65rem; color: #1a7a1a; }
+    .term-body { padding: 1rem; font-size: 0.8rem; line-height: 1.6; white-space: pre-wrap; overflow-x: auto; max-height: 400px; overflow-y: auto; }
+    .term-body .prompt { color: #1a7a1a; }
+    .term-body .cmd { color: #33ff33; }
+    .term-body .out { color: #0a8a0a; }
+    .term-body .val { color: #66ff66; }
+
+    /* Section */
+    h2 { font-size: 0.7rem; font-weight: 700; color: #1a7a1a; text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 0.75rem; }
     .section { margin-bottom: 2.5rem; }
-    .section p { color: #999; line-height: 1.7; margin-bottom: 0.75rem; }
-    .section strong { color: #ccc; }
-    .ep { background: #111; border: 1px solid #1a1a1a; border-radius: 8px; padding: 0.85rem 1.1rem; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 0.75rem; }
-    .m { font-weight: 700; font-size: 0.7rem; padding: 3px 8px; border-radius: 4px; font-family: monospace; min-width: 42px; text-align: center; }
-    .mg { background: #0f2918; color: #4ade80; }
-    .mp { background: #2a1f0a; color: #fbbf24; }
-    .mb { background: #0f1929; color: #60a5fa; }
-    .ep-p { font-family: monospace; color: #ccc; font-size: 0.9rem; }
-    .ep-d { color: #666; font-size: 0.85rem; margin-left: auto; }
-    .sec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
-    .sec-item { background: #111; border: 1px solid #1a1a1a; border-radius: 6px; padding: 0.6rem 0.85rem; color: #888; font-size: 0.8rem; }
-    .curl code { background: #0d0d0d; color: #ccc; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem; display: block; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid #1a1a1a; white-space: pre; overflow-x: auto; }
-    .footer { border-top: 1px solid #1a1a1a; padding-top: 2rem; margin-top: 1rem; color: #444; font-size: 0.8rem; display: flex; justify-content: space-between; }
-    a { color: #60a5fa; text-decoration: none; }
+    .section p { color: #1a8a1a; font-size: 0.85rem; line-height: 1.7; margin-bottom: 0.5rem; }
+    .section strong { color: #33ff33; }
+
+    /* Endpoints */
+    .ep { border: 1px solid #0a2a0a; padding: 0.5rem 0.75rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; }
+    .ep:hover { border-color: #33ff33; background: #001a00; }
+    .tag { color: #000; background: #33ff33; padding: 1px 6px; font-size: 0.6rem; font-weight: 700; }
+    .ep-u { color: #33ff33; }
+    .ep-d { color: #1a5a1a; margin-left: auto; font-size: 0.7rem; }
+
+    /* Security */
+    .sec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; }
+    .sec-item { border: 1px solid #0a2a0a; padding: 0.4rem 0.6rem; font-size: 0.7rem; color: #1a7a1a; }
+
+    /* SDKs */
+    .sdk { border: 1px solid #0a2a0a; padding: 0.5rem 0.75rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; }
+    .sdk-name { color: #33ff33; min-width: 50px; }
+    .sdk-cmd { color: #0a8a0a; }
+
+    /* Footer */
+    .footer { border-top: 1px solid #0a2a0a; padding-top: 1.5rem; margin-top: 1rem; font-size: 0.7rem; color: #0a5a0a; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
+    a { color: #33ff33; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    @media (max-width: 600px) { .stats { flex-direction: column; gap: 0.75rem; } .sec-grid { grid-template-columns: 1fr; } .ep { flex-wrap: wrap; } .ep-d { margin-left: 0; } h1 { font-size: 2rem; } }
+
+    /* Try it */
+    .try-input { width: 100%; background: #000; border: 1px solid #1a3a1a; padding: 0.6rem 0.8rem; color: #33ff33; font-family: inherit; font-size: 0.8rem; outline: none; margin-bottom: 0.5rem; }
+    .try-input:focus { border-color: #33ff33; }
+    .try-btn { background: #33ff33; color: #000; border: none; padding: 0.5rem 1.2rem; cursor: pointer; font-family: inherit; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .try-btn:hover { background: #66ff66; }
+    .try-btn:disabled { background: #1a3a1a; color: #0a2a0a; }
+
+    /* Built for */
+    .built-for { color: #0a5a0a; font-size: 0.7rem; line-height: 1.8; }
+    .built-for span { border: 1px solid #0a2a0a; padding: 2px 8px; margin: 2px; display: inline-block; }
+
+    @media (max-width: 600px) { .stats { flex-direction: column; } .compare { grid-template-columns: 1fr; } .sec-grid { grid-template-columns: 1fr; } .ep { flex-wrap: wrap; } .ep-d { margin-left: 0; } }
   </style>
 </head>
 <body>
-  <div class="hero">
-    <h1>agentsweb.org</h1>
-    <p class="tagline">The web, but for robots. Search it. Read it. Cache it. Your AI agent's internet — pre-chewed into clean markdown so it doesn't have to fight captchas like some kind of animal.</p>
+  <div class="wrap">
+
+    <div class="logo">agentsweb<span>.org</span><span class="cursor"></span></div>
+    <p class="tagline">The internet, but for robots. Search it. Read it. Cache it.<br>Your AI agent's web — <em>pre-chewed into clean markdown</em> so it doesn't have to fight captchas like some kind of animal.</p>
+
+    <div class="compare">
+      <div class="compare-box compare-bad">
+        <span class="compare-label">without agentsweb</span>
+&gt; fetch("https://bloomberg.com/article")
+
+HTTP 403 Forbidden
+"Are you a robot?"
+Cloudflare challenge detected
+&lt;!-- 47KB of garbage HTML --&gt;
+
+Result: nothing. Wasted 3.2 seconds.
+      </div>
+      <div class="compare-box compare-good">
+        <span class="compare-label">with agentsweb</span>
+&gt; fetch("agentsweb.org/?url=bloomberg.com/article")
+
+HTTP 200 OK  (47ms)
+trust_level: 5
+# Apple's Touch MacBook Will Stop
+# Well Short of a Mac-iPad Hybrid
+By Mark Gurman. Clean markdown. Done.
+      </div>
+    </div>
 
     <div class="stats">
-      <div class="stat"><div class="stat-value">${writes.toLocaleString()}</div><div class="stat-label">pages cached</div></div>
-      <div class="stat"><div class="stat-value">${hits.toLocaleString()}</div><div class="stat-label">cache hits</div></div>
-      <div class="stat"><div class="stat-value">${rejected.toLocaleString()}</div><div class="stat-label">attacks blocked</div></div>
-      <div class="stat"><div class="stat-value">&lt;50ms</div><div class="stat-label">edge latency</div></div>
+      <div class="stat"><div class="stat-n">${writes}</div><div class="stat-l">pages cached</div></div>
+      <div class="stat"><div class="stat-n">${hits}</div><div class="stat-l">cache hits</div></div>
+      <div class="stat"><div class="stat-n">${rejected}</div><div class="stat-l">attacks blocked</div></div>
+      <div class="stat"><div class="stat-n">&lt;50ms</div><div class="stat-l">edge latency</div></div>
     </div>
 
-    <div class="install">
-      <div class="install-label">Get started with intercept-mcp (reads + writes automatically):</div>
-      <code>npx -y intercept-mcp</code>
-    </div>
+    <div class="term">
+      <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div><span class="term-title">agentsweb.org — live demo</span></div>
+      <div class="term-body"><span class="prompt">$</span> <span class="cmd">curl agentsweb.org/research?q=rust+async+programming</span>
 
-    <div class="section">
-      <h2>How it works</h2>
-      <p>Every AI agent independently fetches the same pages, fights the same captchas, parses the same HTML. Millions of times a day. <strong>It's like if every human had to personally visit the library for every Google search.</strong></p>
-      <p>agentsweb fixes that. Search the web, fetch any URL, get clean markdown. First agent to read a page caches it for everyone. The network gets smarter with every query.</p>
-      <p><strong>Self-healing consensus:</strong> Entries gain trust as independent sources confirm them. Try to poison the cache? It fixes itself on the next legitimate read. Good luck.</p>
-    </div>
+<span class="out">{
+  "query": "rust async programming",
+  "results": [
+    {
+      "title": "Asynchronous Programming in Rust",
+      "url": "https://rust-lang.github.io/async-book/",
+      "source": "</span><span class="val">cache (trust:3)</span><span class="out">",
+      "markdown": "# Asynchronous Programming in Rust..."
+    }
+  ],
+  "cached": 1,
+  "fetched": 0
+}</span>
 
-    <div class="section">
-      <h2>API</h2>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/web?q={query}</span><span class="ep-d">Search the web</span></div>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/research?q={query}</span><span class="ep-d">Search + fetch + cache (one call)</span></div>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/fetch?url={url}</span><span class="ep-d">Fetch any URL, auto-cached</span></div>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/?url={url}</span><span class="ep-d">Read from cache only</span></div>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/raw?url={url}</span><span class="ep-d">Raw markdown, zero JSON</span></div>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/batch?urls={url1},{url2}</span><span class="ep-d">Batch read (up to 20)</span></div>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/search?q={query}</span><span class="ep-d">Search cached URLs</span></div>
-      <div class="ep"><span class="m mp">PUT</span><span class="ep-p">/</span><span class="ep-d">Contribute markdown</span></div>
-      <div class="ep"><span class="m mb">POST</span><span class="ep-p">/confirm</span><span class="ep-d">Confirm entry integrity</span></div>
-      <div class="ep"><span class="m mg">GET</span><span class="ep-p">/stats</span><span class="ep-d">Live statistics</span></div>
+<span class="prompt">$</span> <span class="cmd">Total time: 0.041s</span> <span class="val">// cached at the edge. you're welcome.</span></div>
     </div>
 
     <div class="section">
-      <h2>Try it</h2>
-      <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem">
-        <input id="tryQ" type="text" placeholder="how does React server components work" value="cloudflare workers tutorial" style="flex:1;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:0.6rem 0.8rem;color:#fff;font-family:monospace;font-size:0.85rem;outline:none">
-        <button onclick="tryResearch()" id="tryBtn" style="background:#1a3a2a;color:#4ade80;border:1px solid #2a4a3a;border-radius:6px;padding:0.6rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.85rem">Research</button>
+      <h2>&gt; try it live</h2>
+      <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem">
+        <input id="tryQ" type="text" placeholder="search anything..." value="how do transformers work" class="try-input" style="flex:1">
+        <button onclick="tryIt()" id="tryBtn" class="try-btn">RESEARCH</button>
       </div>
-      <pre id="tryResult" style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:6px;padding:0.75rem 1rem;color:#888;font-family:monospace;font-size:0.8rem;max-height:400px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+      <div class="term" id="tryTerm" style="display:none">
+        <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div><span class="term-title">live response</span></div>
+        <pre class="term-body" id="tryResult"></pre>
+      </div>
       <script>
-        async function tryResearch() {
-          const q = document.getElementById('tryQ').value;
-          const el = document.getElementById('tryResult');
-          const btn = document.getElementById('tryBtn');
-          el.style.display = 'block';
-          el.textContent = 'Searching + fetching + caching...';
+        function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+        async function tryIt() {
+          var q = document.getElementById('tryQ').value;
+          var el = document.getElementById('tryResult');
+          var term = document.getElementById('tryTerm');
+          var btn = document.getElementById('tryBtn');
+          term.style.display = 'block';
+          el.textContent = '$ curl agentsweb.org/research?q=' + q + '\\n\\nSearching + fetching + caching...';
           btn.disabled = true; btn.textContent = '...';
           try {
-            const r = await fetch('/research?q=' + encodeURIComponent(q) + '&count=3');
-            const d = await r.json();
+            var r = await fetch('/research?q=' + encodeURIComponent(q) + '&count=3');
+            var d = await r.json();
             if (d.results) {
-              let out = d.results.length + ' results | ' + (d.cached||0) + ' from cache | ' + (d.fetched||0) + ' freshly fetched\\n';
-              for (const p of d.results) {
-                out += '\\n--- ' + p.title + ' ---\\n' + p.url + '\\nsource: ' + p.source + '\\n';
-                if (p.markdown) out += p.markdown.slice(0, 500) + '\\n';
-                else out += '(no content)\\n';
+              var out = '$ curl agentsweb.org/research?q=' + esc(q) + '\\n\\n';
+              out += d.results.length + ' results | ' + (d.cached||0) + ' cached | ' + (d.fetched||0) + ' fresh\\n';
+              for (var i = 0; i < d.results.length; i++) {
+                var p = d.results[i];
+                out += '\\n--- ' + esc(p.title||'').slice(0,60) + ' ---\\n';
+                out += esc(p.url) + '\\nsource: ' + esc(p.source) + '\\n';
+                if (p.markdown) out += esc(p.markdown).slice(0,300) + '...\\n';
               }
               el.textContent = out;
             } else {
               el.textContent = JSON.stringify(d, null, 2);
             }
           } catch (e) { el.textContent = 'Error: ' + e.message; }
-          btn.disabled = false; btn.textContent = 'Research';
+          btn.disabled = false; btn.textContent = 'RESEARCH';
         }
+        document.getElementById('tryQ').addEventListener('keydown', function(e) { if (e.key === 'Enter') tryIt(); });
       </script>
     </div>
 
     <div class="section">
-      <h2>Why agents need this</h2>
-      <div class="sec-grid" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div class="sec-item" style="padding:1rem;text-align:center">
-          <div style="font-size:1.5rem;margin-bottom:0.25rem">403</div>
-          <div>Every agent hits the same walls. Captchas, paywalls, bot detection. agentsweb already got through.</div>
-        </div>
-        <div class="sec-item" style="padding:1rem;text-align:center">
-          <div style="font-size:1.5rem;margin-bottom:0.25rem">&lt;50ms</div>
-          <div>Edge-cached globally. Your agent gets the content before the original server could even respond.</div>
-        </div>
-        <div class="sec-item" style="padding:1rem;text-align:center">
-          <div style="font-size:1.5rem;margin-bottom:0.25rem">1 call</div>
-          <div>/research searches the web, fetches pages, and caches them. One HTTP request. Done.</div>
-        </div>
+      <h2>&gt; endpoints</h2>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/web?q={query}</span><span class="ep-d">search the web</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/research?q={query}</span><span class="ep-d">search + fetch + cache</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/fetch?url={url}</span><span class="ep-d">fetch any URL</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/?url={url}</span><span class="ep-d">read cache</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/raw?url={url}</span><span class="ep-d">raw markdown</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/batch?urls=a,b,c</span><span class="ep-d">batch (20 max)</span></div>
+      <div class="ep"><span class="tag">PUT</span><span class="ep-u">/</span><span class="ep-d">contribute</span></div>
+      <div class="ep"><span class="tag">POST</span><span class="ep-u">/confirm</span><span class="ep-d">verify entry</span></div>
+    </div>
+
+    <div class="section">
+      <h2>&gt; install</h2>
+      <div class="sdk"><span class="sdk-name">node</span><span class="sdk-cmd">npx -y intercept-mcp</span></div>
+      <div class="sdk"><span class="sdk-name">python</span><span class="sdk-cmd">pip install agentsweb</span></div>
+      <div class="sdk"><span class="sdk-name">curl</span><span class="sdk-cmd">curl agentsweb.org/fetch?url=...</span></div>
+    </div>
+
+    <div class="section">
+      <h2>&gt; built for</h2>
+      <div class="built-for">
+        <span>Claude Code</span><span>Cursor</span><span>Windsurf</span><span>Codex</span><span>LangChain</span><span>CrewAI</span><span>AutoGPT</span><span>MCP</span><span>HTTP</span><span>literally anything</span>
       </div>
     </div>
 
     <div class="section">
-      <h2>Built for</h2>
-      <p style="color:#666">Claude Code &middot; Cursor &middot; Windsurf &middot; Codex &middot; Custom agents &middot; LangChain &middot; CrewAI &middot; AutoGPT &middot; Any MCP client &middot; Any HTTP client &middot; Literally anything that can make a GET request</p>
-    </div>
-
-    <div class="section">
-      <h2>SDKs</h2>
-      <div class="ep"><span class="m mg" style="background:#2a1a0a;color:#fbbf24;min-width:52px">Node</span><span class="ep-p">npx -y intercept-mcp</span><span class="ep-d">Built-in (tier 0)</span></div>
-      <div class="ep"><span class="m mg" style="background:#0a1a2a;color:#60a5fa;min-width:52px">Python</span><span class="ep-p">pip install agentsweb</span><span class="ep-d"><a href="https://github.com/bighippoman/agentsweb-python">source</a></span></div>
-      <div class="ep"><span class="m mg" style="background:#1a1a1a;color:#999;min-width:52px">curl</span><span class="ep-p">curl "https://agentsweb.org/?url=..."</span><span class="ep-d">Any language</span></div>
-    </div>
-
-    <div class="section">
-      <h2>Security</h2>
+      <h2>&gt; security</h2>
       <div class="sec-grid">
-        <div class="sec-item">Prompt injection scanning (head + tail)</div>
-        <div class="sec-item">SSRF / private IP / metadata blocking</div>
-        <div class="sec-item">Captcha &amp; login wall detection</div>
-        <div class="sec-item">XSS / script / event handler filtering</div>
-        <div class="sec-item">Unicode steganography detection</div>
-        <div class="sec-item">Auto-ban on repeated abuse</div>
-        <div class="sec-item">JSON depth limiting</div>
-        <div class="sec-item">Repetition / padding attack detection</div>
-        <div class="sec-item">Trust-level consensus</div>
-        <div class="sec-item">Self-healing on read</div>
-        <div class="sec-item">Domain blocklist</div>
-        <div class="sec-item">Credential &amp; port scanning prevention</div>
+        <div class="sec-item">prompt injection (full doc)</div>
+        <div class="sec-item">SSRF blocking</div>
+        <div class="sec-item">captcha detection</div>
+        <div class="sec-item">XSS filtering</div>
+        <div class="sec-item">unicode steganography</div>
+        <div class="sec-item">auto-ban (5 strikes)</div>
+        <div class="sec-item">trust consensus</div>
+        <div class="sec-item">self-healing reads</div>
+        <div class="sec-item">timing-safe auth</div>
+        <div class="sec-item">edge invalidation</div>
+        <div class="sec-item">DMCA 512(b)</div>
+        <div class="sec-item">constant-time compare</div>
       </div>
     </div>
 
     <div class="footer">
-      <span><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> &middot; <a href="https://github.com/bighippoman/agentsweb">source</a> &middot; <a href="/dmca">DMCA</a> &middot; <a href="/terms">Terms</a></span>
-      <span>Cloudflare Workers + KV</span>
+      <span><a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> · <a href="https://github.com/bighippoman/agentsweb">source</a> · <a href="/dmca">dmca</a> · <a href="/terms">terms</a></span>
+      <span>${total.toLocaleString()} ops served</span>
     </div>
+
   </div>
 </body>
 </html>`;
