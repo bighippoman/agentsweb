@@ -172,6 +172,13 @@ function validateContent(markdown: string): string | null {
     if (p.test(maliciousScan)) return "malicious content detected";
   }
 
+  // Language diversity check — reject extreme spam (same phrases over and over)
+  const words = stripped.toLowerCase().match(/[a-z]{4,}/g) || [];
+  const uniqueWords = new Set(words);
+  if (words.length > 100 && uniqueWords.size / words.length < 0.08) {
+    return "low vocabulary diversity"; // extreme spam
+  }
+
   // Entropy check: reject if content is mostly base64
   const base64Blocks = markdown.match(/[A-Za-z0-9+/=]{100,}/g);
   if (base64Blocks) {
@@ -590,10 +597,38 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
   // Content gates
   const rejection = validateContent(markdown);
   if (rejection) {
-    await trackAbuse(kv, ip); // track the offender
+    await trackAbuse(kv, ip);
     incrementStat(kv, "rejected");
     return json({ error: rejection }, 422);
   }
+
+  // Structural integrity — real content has markdown structure
+  const hasHeading = /^#{1,6}\s/m.test(markdown);
+  const hasParagraphs = (markdown.match(/\n\n/g) || []).length >= 2;
+  const hasLinks = /\[.*?\]\(.*?\)/.test(markdown);
+  const wordCount = markdown.split(/\s+/).length;
+  if (wordCount < 30) {
+    await trackAbuse(kv, ip);
+    return json({ error: "insufficient content structure" }, 422);
+  }
+  if (!hasHeading && !hasParagraphs && wordCount < 100) {
+    return json({ error: "content lacks structure" }, 422);
+  }
+
+  // URL-content coherence — very loose check, only reject extreme mismatches
+  // e.g., content about crypto scams cached under a react.dev URL
+  try {
+    const pathWords = new URL(url).pathname.split(/[/\-_.]/).filter((w) => w.length > 4);
+    if (pathWords.length >= 2) {
+      const contentLower = markdown.toLowerCase().slice(0, 10_000);
+      const anyPathWordFound = pathWords.some((w) => contentLower.includes(w.toLowerCase()));
+      // Only reject if content is short AND none of the path keywords appear
+      if (!anyPathWordFound && markdown.length < 3000) {
+        incrementStat(kv, "rejected");
+        return json({ error: "content does not appear related to URL" }, 422);
+      }
+    }
+  } catch {}
 
   // Check domain blocklist + DMCA takedowns
   try {
@@ -626,6 +661,14 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
       if (entry.contributors.includes(contributorKey)) {
         return json({ status: "duplicate", trust_level: entry.trust_level });
       }
+      // Max 3 trust increments per hour per URL (prevents botnet trust flooding)
+      const trustRateKey = `trustrate:${await hashUrl(url)}`;
+      const trustIncrements = parseInt((await kv.get(trustRateKey)) || "0", 10);
+      if (trustIncrements >= 3 && !admin) {
+        return json({ status: "trust rate limited", trust_level: entry.trust_level });
+      }
+      await kv.put(trustRateKey, String(trustIncrements + 1), { expirationTtl: 3600 });
+
       if (entry.trust_level < 100) entry.trust_level++;
       entry.updated_at = Date.now();
       entry.contributors.push(contributorKey);
@@ -643,6 +686,15 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
         status: "rejected",
         reason: "existing entry has higher trust",
         trust_level: entry.trust_level,
+      });
+    }
+
+    // Write cooldown — prevent rapid overwrite cycling on trust_level 1 entries
+    const ageMs = Date.now() - entry.updated_at;
+    if (ageMs < 60_000 && !admin) { // 1 minute cooldown
+      return json({
+        status: "rejected",
+        reason: "write cooldown — try again in " + Math.ceil((60_000 - ageMs) / 1000) + "s",
       });
     }
   }
@@ -724,6 +776,15 @@ async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string, 
     if (entry.contributors.includes(contributorKey)) {
       return json({ status: "already confirmed", trust_level: entry.trust_level });
     }
+    // Trust rate limit — max 3 increments per hour per URL
+    const urlHash = await hashUrl(url);
+    const trustRateKey = `trustrate:${urlHash}`;
+    const trustIncrements = parseInt((await kv.get(trustRateKey)) || "0", 10);
+    if (trustIncrements >= 3 && !admin) {
+      return json({ status: "trust rate limited", trust_level: entry.trust_level });
+    }
+    await kv.put(trustRateKey, String(trustIncrements + 1), { expirationTtl: 3600 });
+
     if (entry.trust_level < 100) entry.trust_level++;
     entry.updated_at = Date.now();
     entry.contributors.push(contributorKey);
@@ -735,6 +796,24 @@ async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string, 
     });
     incrementStat(kv, "confirms");
     return json({ status: "confirmed", trust_level: entry.trust_level });
+  }
+
+  // Mismatch — the confirmed content doesn't match cached content
+  // This means either the cache is wrong or the confirmer is wrong
+  // Track mismatches — if too many, decay trust (the cache might be poisoned)
+  const mismatchKey = `mismatch:${urlHash}`;
+  const mismatches = parseInt((await kv.get(mismatchKey)) || "0", 10) + 1;
+  await kv.put(mismatchKey, String(mismatches), { expirationTtl: 3600 }); // 1hr window
+
+  // If 3+ independent mismatches in 1 hour, decay trust
+  if (mismatches >= 3 && entry.trust_level > 1) {
+    entry.trust_level = Math.max(1, entry.trust_level - 1);
+    entry.updated_at = Date.now();
+    await kv.put(key, JSON.stringify(entry), {
+      expirationTtl: getTtl(entry.trust_level, url),
+    });
+    // If trust decayed to 1, it can now be overwritten by the next correct write
+    return json({ status: "mismatch", trust_level: entry.trust_level, trust_decayed: true });
   }
 
   return json({ status: "mismatch", trust_level: entry.trust_level });
@@ -1391,7 +1470,7 @@ By Mark Gurman. Clean markdown. Done.
                 var p = d.results[i];
                 out += '\\n--- ' + esc(p.title||'').slice(0,60) + ' ---\\n';
                 out += esc(p.url) + '\\nsource: ' + esc(p.source) + '\\n';
-                if (p.markdown) out += esc(p.markdown).slice(0,300) + '...\\n';
+                if (p.markdown) out += esc(p.markdown).slice(0,1500) + (p.markdown.length > 1500 ? '\\n\\n[' + p.markdown.length.toLocaleString() + ' chars total]' : '') + '\\n';
               }
               el.textContent = out;
             } else {
