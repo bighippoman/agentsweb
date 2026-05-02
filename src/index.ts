@@ -1032,11 +1032,24 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>agentsweb.org - The web, pre-read for AI</title>
-  <meta name="description" content="A global shared cache of web pages as clean markdown. Sub-50ms reads. Self-healing consensus. Open source.">
+  <title>agentsweb.org — The internet, but for AI agents</title>
+  <meta name="description" content="Search, fetch, and cache the web as clean markdown for AI agents. One API. Sub-50ms reads. Self-healing consensus cache. Open source.">
   <meta name="robots" content="index, follow">
+  <meta name="keywords" content="AI agents, web scraping, markdown, API, MCP, Claude, GPT, LLM, cache, web search, agentic">
   <link rel="canonical" href="https://agentsweb.org">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold'>a</text></svg>">
+
+  <!-- Social -->
+  <meta property="og:title" content="agentsweb.org — The internet, but for AI agents">
+  <meta property="og:description" content="Search, fetch, and cache the web as clean markdown. One API call. Sub-50ms. Self-healing. Open source.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://agentsweb.org">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="agentsweb.org — The internet, but for AI agents">
+  <meta name="twitter:description" content="Your AI agent's internet. Search, fetch, cache — clean markdown, sub-50ms, self-healing consensus.">
+
+  <!-- Structured data -->
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebAPI","name":"agentsweb.org","description":"Global shared cache and search API for AI agents. Serves web pages as clean markdown.","url":"https://agentsweb.org","provider":{"@type":"Organization","name":"agentsweb"},"documentation":"https://github.com/bighippoman/agentsweb"}</script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
@@ -1141,6 +1154,29 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
           btn.disabled = false; btn.textContent = 'Research';
         }
       </script>
+    </div>
+
+    <div class="section">
+      <h2>Why agents need this</h2>
+      <div class="sec-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+        <div class="sec-item" style="padding:1rem;text-align:center">
+          <div style="font-size:1.5rem;margin-bottom:0.25rem">403</div>
+          <div>Every agent hits the same walls. Captchas, paywalls, bot detection. agentsweb already got through.</div>
+        </div>
+        <div class="sec-item" style="padding:1rem;text-align:center">
+          <div style="font-size:1.5rem;margin-bottom:0.25rem">&lt;50ms</div>
+          <div>Edge-cached globally. Your agent gets the content before the original server could even respond.</div>
+        </div>
+        <div class="sec-item" style="padding:1rem;text-align:center">
+          <div style="font-size:1.5rem;margin-bottom:0.25rem">1 call</div>
+          <div>/research searches the web, fetches pages, and caches them. One HTTP request. Done.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Built for</h2>
+      <p style="color:#666">Claude Code &middot; Cursor &middot; Windsurf &middot; Codex &middot; Custom agents &middot; LangChain &middot; CrewAI &middot; AutoGPT &middot; Any MCP client &middot; Any HTTP client &middot; Literally anything that can make a GET request</p>
     </div>
 
     <div class="section">
