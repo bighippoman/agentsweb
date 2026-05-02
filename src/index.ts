@@ -1509,8 +1509,8 @@ By Mark Gurman. Clean markdown. Done.
     <div class="section">
       <h2>&gt; try it live</h2>
       <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem">
-        <input id="tryQ" type="text" placeholder="search anything..." value="react server components tutorial" class="try-input" style="flex:1">
-        <button onclick="tryIt()" id="tryBtn" class="try-btn">RESEARCH</button>
+        <input id="tryQ" type="text" placeholder="search or paste a URL..." value="react server components tutorial" class="try-input" style="flex:1">
+        <button onclick="tryIt()" id="tryBtn" class="try-btn">GO</button>
       </div>
       <div class="term" id="tryTerm" style="display:none">
         <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div><span class="term-title">live response</span></div>
@@ -1519,31 +1519,52 @@ By Mark Gurman. Clean markdown. Done.
       <script>
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
         async function tryIt() {
-          var q = document.getElementById('tryQ').value;
+          var q = document.getElementById('tryQ').value.trim();
           var el = document.getElementById('tryResult');
           var term = document.getElementById('tryTerm');
           var btn = document.getElementById('tryBtn');
           term.style.display = 'block';
-          el.textContent = '$ curl agentsweb.org/research?q=' + q + '\\n\\nSearching + fetching + caching...';
           btn.disabled = true; btn.textContent = '...';
-          try {
-            var r = await fetch('/research?q=' + encodeURIComponent(q) + '&count=3');
-            var d = await r.json();
-            if (d.results) {
-              var out = '$ curl agentsweb.org/research?q=' + esc(q) + '\\n\\n';
-              out += d.results.length + ' results | ' + (d.cached||0) + ' cached | ' + (d.fetched||0) + ' fresh\\n';
-              for (var i = 0; i < d.results.length; i++) {
-                var p = d.results[i];
-                out += '\\n--- ' + esc(p.title||'').slice(0,60) + ' ---\\n';
-                out += esc(p.url) + '\\nsource: ' + esc(p.source) + '\\n';
-                if (p.markdown) out += esc(p.markdown).slice(0,1500) + (p.markdown.length > 1500 ? '\\n\\n[' + p.markdown.length.toLocaleString() + ' chars total]' : '') + '\\n';
+
+          // Auto-detect: is this a URL or a search query?
+          var isUrl = /^https?:\\/\\//i.test(q) || /^www\\./i.test(q);
+          if (isUrl) {
+            if (!/^https?:\\/\\//i.test(q)) q = 'https://' + q;
+            el.textContent = '$ curl agentsweb.org/fetch?url=' + q + '\\n\\nFetching + caching...';
+            try {
+              var r = await fetch('/fetch?url=' + encodeURIComponent(q));
+              var d = await r.json();
+              if (d.markdown) {
+                var out = '$ curl agentsweb.org/fetch?url=' + esc(q) + '\\n\\n';
+                out += 'source: ' + esc(d.source) + ' | trust: ' + (d.trust_level||'?') + ' | ' + d.markdown.length.toLocaleString() + ' chars\\n\\n';
+                out += esc(d.markdown).slice(0, 2000);
+                if (d.markdown.length > 2000) out += '\\n\\n[' + d.markdown.length.toLocaleString() + ' chars total]';
+                el.textContent = out;
+              } else {
+                el.textContent = '$ curl agentsweb.org/fetch?url=' + esc(q) + '\\n\\n' + JSON.stringify(d, null, 2);
               }
-              el.textContent = out;
-            } else {
-              el.textContent = JSON.stringify(d, null, 2);
-            }
-          } catch (e) { el.textContent = 'Error: ' + e.message; }
-          btn.disabled = false; btn.textContent = 'RESEARCH';
+            } catch (e) { el.textContent = 'Error: ' + e.message; }
+          } else {
+            el.textContent = '$ curl agentsweb.org/research?q=' + q + '\\n\\nSearching + fetching + caching...';
+            try {
+              var r = await fetch('/research?q=' + encodeURIComponent(q) + '&count=3');
+              var d = await r.json();
+              if (d.results) {
+                var out = '$ curl agentsweb.org/research?q=' + esc(q) + '\\n\\n';
+                out += d.results.length + ' results | ' + (d.cached||0) + ' cached | ' + (d.fetched||0) + ' fresh\\n';
+                for (var i = 0; i < d.results.length; i++) {
+                  var p = d.results[i];
+                  out += '\\n--- ' + esc(p.title||'').slice(0,60) + ' ---\\n';
+                  out += esc(p.url) + '\\nsource: ' + esc(p.source) + '\\n';
+                  if (p.markdown) out += esc(p.markdown).slice(0,1500) + (p.markdown.length > 1500 ? '\\n\\n[' + p.markdown.length.toLocaleString() + ' chars total]' : '') + '\\n';
+                }
+                el.textContent = out;
+              } else {
+                el.textContent = JSON.stringify(d, null, 2);
+              }
+            } catch (e) { el.textContent = 'Error: ' + e.message; }
+          }
+          btn.disabled = false; btn.textContent = 'GO';
         }
         document.getElementById('tryQ').addEventListener('keydown', function(e) { if (e.key === 'Enter') tryIt(); });
       </script>
