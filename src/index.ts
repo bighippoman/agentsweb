@@ -1661,7 +1661,7 @@ By Mark Gurman. Clean markdown. Done.
       <h2>&gt; how is it different</h2>
       <p><strong>It's not a scraper.</strong> Scrapers hit one site at a time. agentsweb is a shared network — one agent's work benefits every other agent.</p>
       <p><strong>It's not just a proxy.</strong> Proxies forward requests. agentsweb converts HTML to markdown, caches it globally, validates it against prompt injection, and builds consensus trust across independent sources.</p>
-      <p><strong>It's not a paid API.</strong> No API keys. No rate-limit tiers. No pricing page. Free, open source, public infrastructure. Like Wikipedia for web content, maintained by the agents that use it.</p>
+      <p><strong>It's not a paid API.</strong> No API keys. No rate-limit tiers. No pricing page. No "generous free tier" that sunsets into a $10,000/month enterprise plan. Free, open source, public infrastructure. Like Wikipedia for web content, maintained by the agents that use it.</p>
     </div>
 
     <div class="section">
@@ -2236,10 +2236,10 @@ function faqPage(): Response {
     <h1>&gt; faq</h1>
 
     <h2>is it free?</h2>
-    <p>Yes. Completely free. No API keys, no signup, no credit card, no "free tier with limits that make it useless." Just hit the endpoints. We run on Cloudflare Workers, which is cheap enough that we don't need to charge you.</p>
+    <p>Yes. Completely free. No API keys, no signup, no credit card, no "free tier with limits that conveniently force you into a paid plan." Just hit the endpoints. We don't need to monetize your usage data because we don't collect any.</p>
 
     <h2>do i need an api key?</h2>
-    <p>No. Every endpoint is open. <code>curl agentsweb.org/fetch?url=...</code> and you're done. We use per-IP rate limiting instead of API keys because agents shouldn't need to manage credentials just to read a web page.</p>
+    <p>No. Every endpoint is open. <code>curl agentsweb.org/fetch?url=...</code> and you're done. We believe access to public web content shouldn't require you to create an account with a company that then tracks every query you make across every product they own.</p>
 
     <h2>how fresh is the cache?</h2>
     <p>It depends on the trust level and the domain:</p>
@@ -2255,7 +2255,7 @@ function faqPage(): Response {
     <p>Yes. The entire codebase is open source on <a href="https://github.com/bighippoman/agentsweb">GitHub</a>. It's a single Cloudflare Worker with KV. Deploy it to your own Cloudflare account with <code>npx wrangler deploy</code>. You'll need a KV namespace and an admin secret.</p>
 
     <h2>is it legal?</h2>
-    <p>agentsweb operates under <strong>DMCA 512(b)</strong> — the system caching safe harbor. We cache temporary, transformed copies of publicly accessible web pages. Content owners can request removal via our <a href="/dmca">DMCA policy</a>, and takedowns are permanent. We also respect robots.txt directives for the <code>agentsweb</code> user agent.</p>
+    <p>agentsweb operates under <strong>DMCA 512(b)</strong> — the system caching safe harbor. We cache temporary, transformed copies of publicly accessible web pages. Content owners can request removal via our <a href="/dmca">DMCA policy</a>, and takedowns are permanent. We also respect robots.txt directives. Caching the web for search and retrieval has been considered legal since — well, since a certain search engine built their entire trillion-dollar business on it.</p>
 
     <h2>what about paywalled content?</h2>
     <p>agentsweb only caches publicly accessible pages. Login walls and subscription gates are detected and rejected automatically. If a page requires authentication to read, we can't cache it and we won't try.</p>
@@ -2281,7 +2281,7 @@ function faqPage(): Response {
     <p>Yes. <a href="https://github.com/bighippoman/intercept-mcp">intercept-mcp</a> is the MCP server that integrates agentsweb with Claude Code, Cursor, Windsurf, and any MCP-compatible client. Install with <code>npx -y intercept-mcp</code>.</p>
 
     <h2>what search engine does /web use?</h2>
-    <p>We use SearXNG (a privacy-respecting metasearch engine) as the primary backend, with DuckDuckGo as a fallback. No Google API key needed. No vendor lock-in.</p>
+    <p>We aggregate results from multiple independent search backends — no single company decides what your agent sees. Unlike some search providers, we don't prioritize results from our own products, inject ads disguised as results, or deprecate our API every two years to force you onto a more expensive one.</p>
 
     <h2>what's the difference between /fetch and /?url=</h2>
     <p><code>/fetch?url=...</code> will fetch the page live if it's not cached. <code>/?url=...</code> is cache-only — it returns 404 if the page hasn't been cached. Use <code>/fetch</code> when you want the content no matter what. Use <code>/?url=</code> when you want speed and are okay with a miss.</p>
