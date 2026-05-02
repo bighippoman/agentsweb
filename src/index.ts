@@ -562,7 +562,7 @@ async function handleRead(url: string, kv: KVNamespace, ip: string, request: Req
   // --- STORE IN EDGE CACHE (5 min TTL for popular pages) ---
   const cacheResponse = response.clone();
   const cacheHeaders = new Headers(cacheResponse.headers);
-  cacheHeaders.set("Cache-Control", "public, max-age=300"); // 5 min edge TTL
+  cacheHeaders.set("Cache-Control", "public, max-age=900"); // 15 min edge TTL — hot pages stay at edge
   cacheHeaders.set("ETag", etag);
   const toCache = new Response(cacheResponse.body, { status: 200, headers: cacheHeaders });
   waitUntilBg(cache.put(cacheKey, toCache));
@@ -943,7 +943,15 @@ async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip
   if (!query || query.length < 2 || query.length > 500) return json({ error: "query must be 2-500 characters" }, 400);
   const safeCount = Math.min(Math.max(1, count || 5), 20);
 
-  // Check search cache first (60s TTL)
+  // Edge cache check first (sub-1ms)
+  const edgeKey = new Request(`https://agentsweb.org/_search/${encodeURIComponent(query.toLowerCase().trim())}/${safeCount}`);
+  const edgeCached = await caches.default.match(edgeKey);
+  if (edgeCached) {
+    incrementStat(kv, "searches");
+    return edgeCached;
+  }
+
+  // KV search cache (fast, ~50ms)
   const searchCacheKey = `search:${await hashContent(query.toLowerCase().trim())}`;
   const cachedSearch = await kv.get(searchCacheKey);
   if (cachedSearch) {
@@ -973,10 +981,18 @@ async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip
   }
 
   if (best) {
-    // Cache search results for 60s
-    waitUntilBg(kv.put(searchCacheKey, JSON.stringify(best.results), { expirationTtl: 60 }));
+    waitUntilBg(kv.put(searchCacheKey, JSON.stringify(best.results), { expirationTtl: 300 }));
     incrementStat(kv, "searches");
-    return json({ query, results: best.results, source: best.source });
+    const resp = json({ query, results: best.results, source: best.source });
+
+    // Edge cache search results for 2 min
+    const edgeKey = new Request(`https://agentsweb.org/_search/${encodeURIComponent(query)}/${safeCount}`);
+    const edgeResp = new Response(resp.clone().body, {
+      headers: { ...Object.fromEntries(resp.headers), "Cache-Control": "public, max-age=120" },
+    });
+    waitUntilBg(caches.default.put(edgeKey, edgeResp));
+
+    return resp;
   }
 
   return json({ error: "search unavailable — all backends failed" }, 503);
@@ -1289,7 +1305,7 @@ async function handleRawRead(url: string, kv: KVNamespace, ip: string): Promise<
   // Edge cache
   const toCache = response.clone();
   waitUntilBg(cache.put(cacheKey, new Response(toCache.body, {
-    headers: { ...Object.fromEntries(toCache.headers), "Cache-Control": "public, max-age=300" },
+    headers: { ...Object.fromEntries(toCache.headers), "Cache-Control": "public, max-age=900" },
   })));
 
   return response;
