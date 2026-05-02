@@ -1701,7 +1701,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     <div class="compare">
       <div class="compare-box compare-bad">
         <span class="compare-label">without agentsweb</span>
-&gt; fetch("https://bloomberg.com/article")
+&gt; fetch("https://react.dev/reference/rsc/server-components")
 
 HTTP 403 Forbidden
 "Are you a robot?"
@@ -1712,13 +1712,14 @@ Result: nothing. Wasted 3.2 seconds.
       </div>
       <div class="compare-box compare-good">
         <span class="compare-label">with agentsweb</span>
-&gt; fetch("agentsweb.org/?url=bloomberg.com/article")
+&gt; fetch("agentsweb.org/?url=react.dev/reference/rsc/server-components")
 
 HTTP 200 OK  (47ms)
-trust_level: 5
-# Apple's Touch MacBook Will Stop
-# Well Short of a Mac-iPad Hybrid
-By Mark Gurman. Clean markdown. Done.
+trust_level: 3
+# React Server Components
+Server Components are a new type of
+Component that renders ahead of time...
+Clean markdown. 10,012 chars. Done.
       </div>
     </div>
 
