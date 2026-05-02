@@ -1477,7 +1477,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     .stats { display: flex; gap: 1rem; margin-bottom: 2.5rem; }
     .stat { flex: 1; border: 1px solid #2a2218; border-radius: 6px; padding: 1rem; text-align: center; }
     .stat-n { font-size: 1.6rem; font-weight: 700; color: #f0a050; }
-    .stat-l { font-size: 0.65rem; color: #7a6a50; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 0.2rem; }
+    .stat-l { font-size: 0.65rem; color: #a08a60; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 0.2rem; }
 
     .term { background: #111; border: 1px solid #2a2218; border-radius: 8px; margin-bottom: 2rem; overflow: hidden; }
     .term-bar { background: #1a1510; padding: 0.4rem 0.8rem; display: flex; gap: 0.4rem; align-items: center; }
@@ -1485,14 +1485,14 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     .term-dot:nth-child(1) { background: #ff5f57; }
     .term-dot:nth-child(2) { background: #febc2e; }
     .term-dot:nth-child(3) { background: #28c840; }
-    .term-title { margin-left: 0.5rem; font-size: 0.65rem; color: #7a6a50; }
+    .term-title { margin-left: 0.5rem; font-size: 0.65rem; color: #a08a60; }
     .term-body { padding: 1rem; font-size: 0.8rem; line-height: 1.6; white-space: pre-wrap; overflow-x: auto; max-height: 400px; overflow-y: auto; }
-    .term-body .prompt { color: #7a6a50; }
+    .term-body .prompt { color: #a08a60; }
     .term-body .cmd { color: #f0a050; }
     .term-body .out { color: #8a7a60; }
     .term-body .val { color: #f0c070; }
 
-    h2 { font-size: 0.7rem; font-weight: 700; color: #7a6a50; text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 0.75rem; }
+    h2 { font-size: 0.7rem; font-weight: 700; color: #a08a60; text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 0.75rem; }
     .section { margin-bottom: 2.5rem; }
     .section p { color: #999; font-size: 0.85rem; line-height: 1.7; margin-bottom: 0.5rem; }
     .section strong { color: #f0a050; }
@@ -1501,7 +1501,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     .ep:hover { border-color: #f0a050; background: #1a1508; }
     .tag { color: #000; background: #f0a050; padding: 1px 6px; font-size: 0.6rem; font-weight: 700; }
     .ep-u { color: #d4b070; }
-    .ep-d { color: #5a5040; margin-left: auto; font-size: 0.7rem; }
+    .ep-d { color: #8a7a60; margin-left: auto; font-size: 0.7rem; }
 
     .sec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; }
     .sec-item { border: 1px solid #1a1a1a; padding: 0.4rem 0.6rem; font-size: 0.7rem; color: #7a7060; }
@@ -1510,7 +1510,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     .sdk-name { color: #f0a050; min-width: 50px; }
     .sdk-cmd { color: #8a7a60; }
 
-    .footer { border-top: 1px solid #1a1a1a; padding-top: 1.5rem; margin-top: 1rem; font-size: 0.7rem; color: #4a4030; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
+    .footer { border-top: 1px solid #1a1a1a; padding-top: 1.5rem; margin-top: 1rem; font-size: 0.7rem; color: #9a8a6a; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
     .footer a { color: #a08050; }
     a { color: #f0a050; text-decoration: none; }
     a:hover { text-decoration: underline; }
@@ -1521,7 +1521,7 @@ async function landingPage(kv: KVNamespace): Promise<Response> {
     .try-btn:hover { background: #f0c070; }
     .try-btn:disabled { background: #3a2a18; color: #5a4a30; }
 
-    .built-for { color: #5a5040; font-size: 0.7rem; line-height: 1.8; }
+    .built-for { color: #8a7a60; font-size: 0.7rem; line-height: 1.8; }
     .built-for span { border: 1px solid #1a1a1a; padding: 2px 8px; margin: 2px; display: inline-block; }
     .built-for span:hover { border-color: #f0a050; color: #f0a050; }
 
@@ -1837,7 +1837,7 @@ const PAGE_HEADERS = {
 };
 
 function makePage(title: string, body: string): Response {
-  const nav = `<div class="nav"><a href="/">agentsweb.org</a> / ${title.toLowerCase()} &nbsp; <span style="color:#3a3020">|</span> <a href="/docs">docs</a> · <a href="/blog">blog</a> · <a href="/about">about</a> · <a href="/security">security</a> · <a href="/faq">faq</a></div>`;
+  const nav = `<div class="nav"><a href="/">agentsweb.org</a> / ${title.toLowerCase()} &nbsp; <span style="color:#7a6a50">|</span> <a href="/docs">docs</a> · <a href="/blog">blog</a> · <a href="/about">about</a> · <a href="/security">security</a> · <a href="/faq">faq</a></div>`;
   return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — agentsweb.org</title><meta name="description" content="${title} — agentsweb.org. The internet, pre-read for AI agents. Open source markdown cache and web search API."><link rel="canonical" href="https://agentsweb.org/${title.toLowerCase().replace(/\s+/g,'-')}"><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='monospace' font-weight='bold' fill='%23f0a050'>a</text></svg>"><style>${PAGE_STYLE}</style></head><body><div class="page">${nav}${body}<p class="back"><a href="/">&lt; back to agentsweb.org</a></p></div></body></html>`, { headers: PAGE_HEADERS });
 }
 
