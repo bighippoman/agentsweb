@@ -154,19 +154,24 @@ function validateContent(markdown: string): string | null {
     if (p.test(head)) return "login wall detected";
   }
 
-  // Scan broadly for injection and malicious content
-  // Check first 10KB for injection (attackers might pad)
-  const scanRegion = markdown.slice(0, 10_000);
+  // Strip code blocks before scanning — docs legitimately contain <script>, onclick, etc.
+  const stripped = markdown
+    .replace(/```[\s\S]*?```/g, "")  // fenced code blocks
+    .replace(/`[^`]+`/g, "");        // inline code
+
+  // Scan broadly for injection
+  const scanRegion = stripped.slice(0, 10_000);
   for (const p of PROMPT_INJECTION_PATTERNS) {
     if (p.test(scanRegion)) return "prompt injection detected";
   }
 
   // Also scan LAST 5KB (injection at end of content)
-  const tail = markdown.slice(-5_000);
+  const tail = stripped.slice(-5_000);
   for (const p of PROMPT_INJECTION_PATTERNS) {
     if (p.test(tail)) return "prompt injection detected (tail)";
   }
 
+  // Malicious content check (outside code blocks only)
   for (const p of MALICIOUS_CONTENT_PATTERNS) {
     if (p.test(scanRegion)) return "malicious content detected";
   }
