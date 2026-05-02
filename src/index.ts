@@ -501,14 +501,80 @@ function waitUntilBg(p: Promise<unknown>): void {
 // Handlers
 // ============================================================
 
-async function handleRead(url: string, kv: KVNamespace, ip: string, request: Request): Promise<Response> {
+// ============================================================
+// Agent-friendly content processing
+// ============================================================
+
+/** Rough token estimate (~4 chars per token for English text) */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Truncate markdown to approximately N tokens, breaking at paragraph boundaries */
+function truncateToTokens(markdown: string, maxTokens: number): string {
+  const maxChars = maxTokens * 4;
+  if (markdown.length <= maxChars) return markdown;
+
+  // Find the last paragraph break before the limit
+  const truncated = markdown.slice(0, maxChars);
+  const lastParagraph = truncated.lastIndexOf("\n\n");
+  const cutPoint = lastParagraph > maxChars * 0.5 ? lastParagraph : maxChars;
+
+  return truncated.slice(0, cutPoint) + "\n\n[Truncated — " + estimateTokens(markdown).toLocaleString() + " tokens total]";
+}
+
+/** Strip common boilerplate from markdown */
+function cleanForAgent(markdown: string): string {
+  let md = markdown;
+
+  // Strip share/social lines
+  md = md.replace(/^.*?(share|tweet|follow us|subscribe|newsletter|sign up|cookie|privacy policy|terms of service|advertisement|sponsored).*$/gim, "");
+
+  // Strip "Related articles" sections
+  md = md.replace(/^#{1,3}\s*(related|recommended|you may also|more from|trending|popular|see also).*$[\s\S]*?(?=^#{1,3}\s|\Z)/gim, "");
+
+  // Strip empty link lists (nav remnants)
+  md = md.replace(/^(\s*\*\s*\n){3,}/gm, "");
+
+  // Collapse excessive blank lines
+  md = md.replace(/\n{4,}/g, "\n\n");
+
+  return md.trim();
+}
+
+/** Detect content type from markdown structure */
+function detectContentType(markdown: string, url: string): string {
+  const lower = markdown.toLowerCase();
+  const urlLower = url.toLowerCase();
+
+  if (urlLower.includes("/docs") || urlLower.includes("/reference") || urlLower.includes("/api")) return "documentation";
+  if (urlLower.includes("/tutorial") || urlLower.includes("/learn") || urlLower.includes("/getting-started")) return "tutorial";
+  if (urlLower.includes("/blog") || urlLower.includes("/news") || urlLower.includes("/article")) return "article";
+  if (urlLower.includes("arxiv.org")) return "paper";
+  if (urlLower.includes("github.com")) return "repository";
+  if (urlLower.includes("wikipedia.org")) return "encyclopedia";
+
+  // Content heuristics
+  const codeBlocks = (markdown.match(/```/g) || []).length / 2;
+  const headings = (markdown.match(/^#{1,3}\s/gm) || []).length;
+
+  if (codeBlocks > 5) return "tutorial";
+  if (headings > 10) return "documentation";
+  if (lower.includes("abstract") && lower.includes("introduction")) return "paper";
+
+  return "article";
+}
+
+async function handleRead(url: string, kv: KVNamespace, ip: string, request: Request, maxTokens = 0, clean = true): Promise<Response> {
   const urlErr = validateUrl(url);
   if (urlErr) return json({ error: urlErr }, 400);
 
   // --- EDGE CACHE: check CF Cache API first (sub-1ms) ---
+  // Skip edge cache if agent params are set (truncation, clean=false)
+  const hasAgentParams = maxTokens > 0 || !clean;
   const cache = caches.default;
   const cacheKey = new Request(`https://agentsweb.org/_cache/${encodeURIComponent(normalizeUrlForCache(url))}`, { method: "GET" });
-  const cachedResponse = await cache.match(cacheKey);
+  const cachedResponse = !hasAgentParams ? await cache.match(cacheKey) : null;
   if (cachedResponse) {
     // ETag check against edge-cached response
     const etag = cachedResponse.headers.get("ETag");
@@ -548,13 +614,24 @@ async function handleRead(url: string, kv: KVNamespace, ip: string, request: Req
     return new Response(null, { status: 304, headers: { ETag: etag, ...securityHeaders() } });
   }
 
-  const stale = (Date.now() - entry.updated_at) > getTtl(entry.trust_level, entry.url) * 750; // 75% of TTL
+  const stale = (Date.now() - entry.updated_at) > getTtl(entry.trust_level, entry.url) * 750;
+
+  // Agent-friendly processing
+  let markdown = clean ? cleanForAgent(entry.markdown) : entry.markdown;
+  const totalTokens = estimateTokens(markdown);
+  const truncated = maxTokens > 0 && totalTokens > maxTokens;
+  if (truncated) markdown = truncateToTokens(markdown, maxTokens);
+  const contentType = detectContentType(entry.markdown, entry.url);
 
   const response = json({
     url: entry.url,
-    markdown: entry.markdown,
+    markdown,
     trust_level: entry.trust_level,
     source: entry.source,
+    content_type: contentType,
+    tokens: truncated ? estimateTokens(markdown) : totalTokens,
+    total_tokens: totalTokens,
+    ...(truncated ? { truncated: true } : {}),
     age_seconds: Math.floor((Date.now() - entry.updated_at) / 1000),
     ...(stale ? { stale: true } : {}),
   }, 200, etag);
@@ -1255,12 +1332,13 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
 function htmlToBasicMarkdown(html: string): string {
   let text = html;
 
-  // Try to extract article/main content
+  // Try to extract article/main content first (most accurate)
   const articleMatch = text.match(/<article[\s>][\s\S]*?<\/article>/i)
-    ?? text.match(/<main[\s>][\s\S]*?<\/main>/i);
+    ?? text.match(/<main[\s>][\s\S]*?<\/main>/i)
+    ?? text.match(/<div[^>]*(?:class|id)="[^"]*(?:content|article|post|entry|main)[^"]*"[^>]*>[\s\S]*?<\/div>/i);
   if (articleMatch) text = articleMatch[0];
 
-  // Strip noise
+  // Strip noise elements
   text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
   text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
   text = text.replace(/<nav[\s\S]*?<\/nav>/gi, "");
@@ -1269,36 +1347,73 @@ function htmlToBasicMarkdown(html: string): string {
   text = text.replace(/<aside[\s\S]*?<\/aside>/gi, "");
   text = text.replace(/<noscript[\s\S]*?<\/noscript>/gi, "");
   text = text.replace(/<svg[\s\S]*?<\/svg>/gi, "");
+  text = text.replace(/<button[\s\S]*?<\/button>/gi, "");
+  text = text.replace(/<form[\s\S]*?<\/form>/gi, "");
+  text = text.replace(/<iframe[\s\S]*?<\/iframe>/gi, "");
+  text = text.replace(/<!--[\s\S]*?-->/g, ""); // HTML comments
 
-  // Convert headings
+  // Convert headings (h1-h6)
   text = text.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n# $1\n");
   text = text.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n## $1\n");
   text = text.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n### $1\n");
+  text = text.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, "\n#### $1\n");
+  text = text.replace(/<h5[^>]*>([\s\S]*?)<\/h5>/gi, "\n##### $1\n");
+  text = text.replace(/<h6[^>]*>([\s\S]*?)<\/h6>/gi, "\n###### $1\n");
 
-  // Convert links
+  // Convert code blocks
+  text = text.replace(/<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, "\n```\n$1\n```\n");
+  text = text.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, "\n```\n$1\n```\n");
+  text = text.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`");
+
+  // Convert links (preserve href)
   text = text.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)");
 
-  // Convert bold/italic
+  // Convert images
+  text = text.replace(/<img[^>]+alt="([^"]*)"[^>]+src="([^"]*)"[^>]*\/?>/gi, "![$1]($2)");
+  text = text.replace(/<img[^>]+src="([^"]*)"[^>]*\/?>/gi, "![]($1)");
+
+  // Convert bold/italic/strikethrough
   text = text.replace(/<(strong|b)>([\s\S]*?)<\/\1>/gi, "**$2**");
   text = text.replace(/<(em|i)>([\s\S]*?)<\/\1>/gi, "*$2*");
+  text = text.replace(/<(del|s|strike)>([\s\S]*?)<\/\1>/gi, "~~$2~~");
+
+  // Convert blockquotes
+  text = text.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
+    return content.split("\n").map((l: string) => "> " + l.trim()).join("\n") + "\n";
+  });
+
+  // Convert tables
+  text = text.replace(/<th[^>]*>([\s\S]*?)<\/th>/gi, "| $1 ");
+  text = text.replace(/<td[^>]*>([\s\S]*?)<\/td>/gi, "| $1 ");
+  text = text.replace(/<\/tr>/gi, "|\n");
 
   // Convert lists
   text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n");
 
-  // Convert paragraphs/divs to line breaks
+  // Convert horizontal rules
+  text = text.replace(/<hr[^>]*\/?>/gi, "\n---\n");
+
+  // Convert line breaks and paragraphs
   text = text.replace(/<br\s*\/?>/gi, "\n");
-  text = text.replace(/<\/(p|div|tr|blockquote)>/gi, "\n\n");
+  text = text.replace(/<\/(p|div|tr|blockquote|section|article)>/gi, "\n\n");
 
   // Strip remaining tags
   text = text.replace(/<[^>]+>/g, "");
 
   // Decode entities
-  text = text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
+  text = text
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ")
+    .replace(/&mdash;/g, "—").replace(/&ndash;/g, "–").replace(/&hellip;/g, "...")
+    .replace(/&lsquo;/g, "'").replace(/&rsquo;/g, "'")
+    .replace(/&ldquo;/g, "\u201C").replace(/&rdquo;/g, "\u201D")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCharCode(parseInt(n, 16)));
 
   // Clean whitespace
   text = text.replace(/[^\S\n]+/g, " ");
   text = text.replace(/\n{3,}/g, "\n\n");
+  text = text.replace(/^\s+/gm, (match) => match.includes("\n") ? "\n" : "");
 
   return text.trim();
 }
@@ -2503,7 +2618,9 @@ export default {
     // API routes
     try {
       if (method === "GET" && url.pathname === "/" && url.searchParams.has("url")) {
-        return await handleRead(url.searchParams.get("url")!, env.CACHE, ip, request);
+        const maxTokens = parseInt(url.searchParams.get("max_tokens") || "0") || 0;
+        const clean = url.searchParams.get("clean") !== "false"; // default: clean
+        return await handleRead(url.searchParams.get("url")!, env.CACHE, ip, request, maxTokens, clean);
       }
 
       if (method === "GET" && url.pathname === "/raw" && url.searchParams.has("url")) {
