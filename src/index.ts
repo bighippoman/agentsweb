@@ -710,10 +710,6 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
     return json({ error: "temporarily banned" }, 403);
   }
 
-  if (!admin && !(await checkRateLimit(kv, ip, "write"))) {
-    return json({ error: "rate limited" }, 429);
-  }
-
   const { url, markdown, source } = body;
   const instanceId = validateInstanceId(body.instance_id);
 
@@ -1504,10 +1500,9 @@ function extractPartialContent(markdown: string, url: string): string | null {
   return before + "\n\n---\n*[Content truncated — full article requires subscription at original source]*";
 }
 
-async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string, forceRefresh = false, env?: Env): Promise<Response> {
+async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string, forceRefresh = false, env?: Env, admin = false): Promise<Response> {
   const urlErr = validateUrl(url);
   if (urlErr) return json({ error: urlErr }, 400);
-  if (!(await checkRateLimit(kv, ip, "write"))) return json({ error: "rate limited" }, 429);
   if (await isAbuseBanned(kv, ip)) return json({ error: "temporarily banned" }, 403);
 
   const urlHash = await hashUrl(url);
@@ -2760,7 +2755,7 @@ export default {
       // Fetch on demand — give URL, get markdown, auto-cached
       if (method === "GET" && url.pathname === "/fetch" && url.searchParams.has("url")) {
         const forceRefresh = url.searchParams.get("refresh") === "true" && admin;
-        return await handleFetchAndCache(url.searchParams.get("url")!, env.CACHE, ip, forceRefresh, env);
+        return await handleFetchAndCache(url.searchParams.get("url")!, env.CACHE, ip, forceRefresh, env, admin);
       }
 
       if (method === "POST" && url.pathname === "/takedown") {
