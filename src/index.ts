@@ -585,6 +585,108 @@ function extractHeadings(markdown: string): string[] {
   );
 }
 
+// ============================================================
+// Chunk engine — split pages into searchable semantic chunks
+// ============================================================
+
+interface Chunk {
+  url: string;
+  heading: string; // nearest heading above this chunk
+  text: string;
+  tokens: number;
+  keywords: string[]; // top keywords for search matching
+}
+
+/** Split markdown into semantic chunks of ~300-800 tokens */
+function chunkMarkdown(markdown: string, url: string): Chunk[] {
+  const chunks: Chunk[] = [];
+  const lines = markdown.split("\n");
+
+  let currentHeading = "";
+  let currentLines: string[] = [];
+  let currentTokens = 0;
+
+  const flush = () => {
+    const text = currentLines.join("\n").trim();
+    if (text.length < 100) return; // skip tiny fragments
+
+    const tokens = estimateTokens(text);
+    const words = text.toLowerCase().match(/[a-z]{3,}/g) || [];
+    const wordFreq = new Map<string, number>();
+    for (const w of words) {
+      if (w.length < 4) continue;
+      wordFreq.set(w, (wordFreq.get(w) || 0) + 1);
+    }
+    // Top 10 keywords by frequency
+    const keywords = [...wordFreq.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([w]) => w);
+
+    chunks.push({ url, heading: currentHeading, text, tokens, keywords });
+    currentLines = [];
+    currentTokens = 0;
+  };
+
+  for (const line of lines) {
+    const headingMatch = line.match(/^(#{1,3})\s+(.+)/);
+
+    if (headingMatch) {
+      // New heading — flush current chunk
+      if (currentLines.length > 0) flush();
+      currentHeading = headingMatch[2].replace(/\[.*?\]\(.*?\)/g, "").trim();
+      currentLines.push(line);
+      currentTokens += estimateTokens(line);
+      continue;
+    }
+
+    currentLines.push(line);
+    currentTokens += estimateTokens(line);
+
+    // Flush at ~500 tokens on paragraph boundaries
+    if (currentTokens >= 500 && line.trim() === "") {
+      flush();
+    }
+  }
+
+  // Flush remainder
+  if (currentLines.length > 0) flush();
+
+  return chunks;
+}
+
+/** Search chunks by keyword matching — returns most relevant chunks */
+function searchChunks(chunks: Chunk[], query: string, maxChunks = 3): Chunk[] {
+  const queryWords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  if (!queryWords.length) return [];
+
+  const scored = chunks.map((chunk) => {
+    const searchText = `${chunk.heading} ${chunk.text}`.toLowerCase();
+    let score = 0;
+
+    for (const word of queryWords) {
+      // Heading match is strongest signal
+      if (chunk.heading.toLowerCase().includes(word)) score += 5;
+      // Keyword match
+      if (chunk.keywords.includes(word)) score += 3;
+      // Body text match
+      if (searchText.includes(word)) score += 1;
+    }
+
+    // Bonus for matching ALL query words
+    const allMatch = queryWords.every((w) => searchText.includes(w));
+    if (allMatch) score += 10;
+
+    return { chunk, score };
+  });
+
+  return scored
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxChunks)
+    .map((s) => s.chunk);
+}
+
 /** Truncate markdown to approximately N tokens, breaking at paragraph boundaries */
 function truncateToTokens(markdown: string, maxTokens: number): string {
   const maxChars = maxTokens * 4;
@@ -936,6 +1038,17 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
     const c = caches.default;
     await c.delete(new Request(`https://agentsweb.org/_cache/${encodeURIComponent(normalizeUrlForCache(url))}`));
     await c.delete(new Request(`https://agentsweb.org/_raw/${encodeURIComponent(normalizeUrlForCache(url))}`));
+  })());
+
+  // Chunk the page for semantic search
+  waitUntilBg((async () => {
+    const chunks = chunkMarkdown(markdown, url);
+    if (chunks.length > 0) {
+      const chunkHash = await hashUrl(url);
+      await kv.put(`chunks:${chunkHash}`, JSON.stringify(chunks.slice(0, 50)), {
+        expirationTtl: getTtl(1, url),
+      });
+    }
   })());
 
   // Maintain URL index + content search index
@@ -2825,6 +2938,87 @@ export default {
 
       if (method === "GET" && url.pathname === "/search" && url.searchParams.has("q")) {
         return await handleSearch(url.searchParams.get("q")!, env.CACHE, ip);
+      }
+
+      // Chunk search — find relevant chunks from a specific URL
+      if (method === "GET" && url.pathname === "/chunks" && url.searchParams.has("url")) {
+        const targetUrl = url.searchParams.get("url")!;
+        const query = url.searchParams.get("q") || "";
+        const urlHash = await hashUrl(targetUrl);
+        const raw = await env.CACHE.get(`chunks:${urlHash}`);
+        if (!raw) {
+          // Try to chunk on the fly from cached content
+          const cached = await env.CACHE.get(`cache:${urlHash}`);
+          if (!cached) return json({ error: "page not cached", url: targetUrl }, 404);
+          const entry: CacheEntry = JSON.parse(cached);
+          const chunks = chunkMarkdown(entry.markdown, targetUrl);
+          // Store for next time
+          waitUntilBg(env.CACHE.put(`chunks:${urlHash}`, JSON.stringify(chunks.slice(0, 50)), { expirationTtl: getTtl(entry.trust_level, targetUrl) }));
+
+          if (query) {
+            const matched = searchChunks(chunks, query);
+            return json({ url: targetUrl, query, chunks: matched, total_chunks: chunks.length });
+          }
+          return json({ url: targetUrl, chunks, total_chunks: chunks.length });
+        }
+
+        const chunks: Chunk[] = JSON.parse(raw);
+        if (query) {
+          const matched = searchChunks(chunks, query);
+          return json({ url: targetUrl, query, chunks: matched, total_chunks: chunks.length });
+        }
+        return json({ url: targetUrl, chunks, total_chunks: chunks.length });
+      }
+
+      // Global chunk search — search ALL cached chunks across ALL pages
+      if (method === "GET" && url.pathname === "/ask" && url.searchParams.has("q")) {
+        const query = url.searchParams.get("q")!;
+        if (query.length < 3) return json({ error: "query too short" }, 400);
+
+        // Get all cached URLs from index
+        const indexRaw = await env.CACHE.get("index:urls");
+        if (!indexRaw) return json({ error: "no cached content" }, 404);
+        const urls: string[] = JSON.parse(indexRaw);
+
+        // Search chunks across all pages (limit to first 50 URLs for speed)
+        const allMatches: Array<Chunk & { relevance: number }> = [];
+        const searchUrls = urls.slice(0, 50);
+
+        await Promise.all(searchUrls.map(async (cachedUrl) => {
+          const urlHash = await hashUrl(cachedUrl);
+          const raw = await env.CACHE.get(`chunks:${urlHash}`);
+          if (!raw) return;
+          const chunks: Chunk[] = JSON.parse(raw);
+          const matched = searchChunks(chunks, query, 2);
+          for (const m of matched) {
+            const queryWords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+            const searchText = `${m.heading} ${m.text}`.toLowerCase();
+            let relevance = 0;
+            for (const w of queryWords) {
+              if (m.heading.toLowerCase().includes(w)) relevance += 5;
+              if (m.keywords.includes(w)) relevance += 3;
+              if (searchText.includes(w)) relevance += 1;
+            }
+            if (queryWords.every((w) => searchText.includes(w))) relevance += 10;
+            allMatches.push({ ...m, relevance });
+          }
+        }));
+
+        const top = allMatches
+          .sort((a, b) => b.relevance - a.relevance)
+          .slice(0, 5);
+
+        return json({
+          query,
+          results: top.map((m) => ({
+            url: m.url,
+            heading: m.heading,
+            text: m.text,
+            tokens: m.tokens,
+            relevance: m.relevance,
+          })),
+          pages_searched: searchUrls.length,
+        });
       }
 
       // Web search — real search engine results
