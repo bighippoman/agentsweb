@@ -2,7 +2,7 @@
 
 **The web, cached as clean markdown for AI agents.**
 
-A global shared cache backed by Cloudflare Workers + KV. Multiple independent instances contribute and verify cached content through a self-healing consensus model that prevents poisoning -- if an entry is stale or tampered with, the next reader re-fetches and overwrites it.
+A global shared cache backed by Cloudflare Workers + KV with a 9-source parallel fetch pipeline and JS/SPA rendering (React, Vue, Angular via Cloudflare Browser Run). Multiple independent instances contribute and verify cached content through a self-healing consensus model that prevents poisoning -- if an entry is stale or tampered with, the next reader re-fetches and overwrites it.
 
 ## API
 

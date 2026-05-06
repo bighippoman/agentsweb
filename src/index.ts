@@ -1858,7 +1858,7 @@ Clean markdown. 10,012 chars. Done.
     <div class="section">
       <h2>&gt; how is it different</h2>
       <p><strong>It's not a scraper.</strong> Scrapers hit one site at a time. agentsweb is a shared network — one agent's work benefits every other agent.</p>
-      <p><strong>It's not just a proxy.</strong> Proxies forward requests. agentsweb converts HTML to markdown, caches it globally, validates it against prompt injection, and builds consensus trust across independent sources.</p>
+      <p><strong>It's not just a proxy.</strong> Proxies forward requests. agentsweb runs a 9-source fetch pipeline with JS/SPA rendering (React, Vue, Angular), converts HTML to markdown, caches it globally, validates it against prompt injection, and builds consensus trust across independent sources.</p>
       <p><strong>It's not a paid API.</strong> No API keys. No rate-limit tiers. No pricing page. No "generous free tier" that sunsets into a $10,000/month enterprise plan. Free, open source, public infrastructure. Like Wikipedia for web content, maintained by the agents that use it.</p>
     </div>
 
@@ -1899,6 +1899,7 @@ Clean markdown. 10,012 chars. Done.
         <div class="sec-item">auto-ban (5 strikes)</div>
         <div class="sec-item">trust consensus</div>
         <div class="sec-item">self-healing reads</div>
+        <div class="sec-item">JS/SPA rendering</div>
         <div class="sec-item">timing-safe auth</div>
         <div class="sec-item">edge invalidation</div>
         <div class="sec-item">DMCA 512(b)</div>
@@ -2092,7 +2093,7 @@ function docsPage(): Response {
 
     <h2>fetch any url</h2>
     <p><code>GET /fetch?url={url}</code></p>
-    <p>Give it a URL, get clean markdown. If it's cached, instant. If not, fetches it live, caches it, and returns it. You never need to worry about whether something is cached.</p>
+    <p>Give it a URL, get clean markdown. If it's cached, instant. If not, a 9-source fetch pipeline races in parallel — including Cloudflare Browser Run for JS/SPA rendering (React, Vue, Angular). First success wins. Content is cached and returned. Up to 10MB per page.</p>
 
     <h2>read from cache</h2>
     <p><code>GET /?url={url}</code></p>
@@ -2153,7 +2154,7 @@ function securityPage(): Response {
       <li><strong>Unicode steganography:</strong> Invisible zero-width characters used to hide payloads are detected.</li>
       <li><strong>Repetition attack:</strong> Content with >50% identical lines (padding attacks) is rejected.</li>
       <li><strong>Base64 smuggling:</strong> Content with >40% base64-encoded blocks is rejected.</li>
-      <li><strong>Length bounds:</strong> Minimum 200 chars, maximum 512KB.</li>
+      <li><strong>Length bounds:</strong> Minimum 200 chars, maximum 10MB.</li>
     </ul>
 
     <h2>url validation (ssrf prevention)</h2>
@@ -2254,7 +2255,7 @@ function blogPage(): Response {
     <h2>the architecture</h2>
     <p>It's a single Cloudflare Worker with a KV store. That's it. No databases, no containers, no Kubernetes. One file, deployed globally to 300+ edge locations.</p>
     <p>When you search, 6 search backends race in parallel — 5 SearXNG instances plus DuckDuckGo. First with results wins. Results are cached for 5 minutes at the KV layer and 2 minutes at the edge.</p>
-    <p>When you fetch a URL, 6 content sources race in parallel — Jina Reader, Codetabs, Wayback Machine, Arquivo.pt, Google Cache, and raw fetch. The longest, highest-quality result wins. Content is validated against prompt injection, XSS, captcha patterns, login walls, and structural integrity checks. Then it's cached globally.</p>
+    <p>When you fetch a URL, 9 content sources race in parallel — Cloudflare Browser Run (JS/SPA rendering), Jina Reader, Codetabs, Wayback Machine, Arquivo.pt, Google Cache, archive.ph, AllOrigins, and raw fetch. First success wins — 20x faster than sequential fallback. Content is validated against prompt injection, XSS, captcha patterns, login walls, and structural integrity checks. Then it's cached globally.</p>
     <p>Three-tier caching on every read: edge cache (sub-1ms) → KV cache (~50ms) → live fetch (1-5s). At scale, most requests never touch a backend.</p>
 
     <h2>the legal question</h2>
