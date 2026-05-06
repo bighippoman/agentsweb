@@ -1978,23 +1978,23 @@ Clean markdown. 10,012 chars. Done.
 
     <div class="term">
       <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div><span class="term-title">agentsweb.org — live demo</span></div>
-      <div class="term-body"><span class="prompt">$</span> <span class="cmd">curl agentsweb.org/research?q=rust+async+programming</span>
+      <div class="term-body"><span class="prompt">$</span> <span class="cmd">curl agentsweb.org/ask?q=react+useState+hook</span>
 
 <span class="out">{
-  "query": "rust async programming",
+  "query": "react useState hook",
   "results": [
     {
-      "title": "Asynchronous Programming in Rust",
-      "url": "https://rust-lang.github.io/async-book/",
-      "source": "</span><span class="val">cache (trust:3)</span><span class="out">",
-      "markdown": "# Asynchronous Programming in Rust..."
+      "heading": "Using Hooks",
+      "url": "https://react.dev/learn",
+      "tokens": 140,
+      "text": "Functions starting with use are called
+        Hooks. useState is a built-in Hook..."
     }
   ],
-  "cached": 1,
-  "fetched": 0
+  "pages_searched": 243
 }</span>
 
-<span class="prompt">$</span> <span class="cmd">Total time: 0.041s</span> <span class="val">// cached at the edge. you're welcome.</span></div>
+<span class="prompt">$</span> <span class="cmd">140 tokens instead of 4,623.</span> <span class="val">// you're welcome.</span></div>
     </div>
 
     <div class="section">
@@ -2077,14 +2077,19 @@ Clean markdown. 10,012 chars. Done.
 
     <div class="section">
       <h2>&gt; endpoints</h2>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/ask?q={question}</span><span class="ep-d">find exact answer chunks across all pages</span></div>
       <div class="ep"><span class="tag">GET</span><span class="ep-u">/web?q={query}</span><span class="ep-d">search the web</span></div>
       <div class="ep"><span class="tag">GET</span><span class="ep-u">/research?q={query}</span><span class="ep-d">search + fetch + cache</span></div>
-      <div class="ep"><span class="tag">GET</span><span class="ep-u">/fetch?url={url}</span><span class="ep-d">fetch any URL</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/fetch?url={url}</span><span class="ep-d">fetch any URL, auto-cached</span></div>
       <div class="ep"><span class="tag">GET</span><span class="ep-u">/?url={url}</span><span class="ep-d">read cache</span></div>
-      <div class="ep"><span class="tag">GET</span><span class="ep-u">/raw?url={url}</span><span class="ep-d">raw markdown</span></div>
-      <div class="ep"><span class="tag">GET</span><span class="ep-u">/batch?urls=a,b,c</span><span class="ep-d">batch (20 max)</span></div>
-      <div class="ep"><span class="tag">PUT</span><span class="ep-u">/</span><span class="ep-d">contribute</span></div>
-      <div class="ep"><span class="tag">POST</span><span class="ep-u">/confirm</span><span class="ep-d">verify entry</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/?url={url}&amp;section={topic}</span><span class="ep-d">extract specific section</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/?url={url}&amp;toc=true</span><span class="ep-d">list all headings</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/?url={url}&amp;max_tokens=N</span><span class="ep-d">truncate to N tokens</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/chunks?url={url}&amp;q={query}</span><span class="ep-d">search within page chunks</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/raw?url={url}</span><span class="ep-d">raw markdown, zero JSON</span></div>
+      <div class="ep"><span class="tag">GET</span><span class="ep-u">/batch?urls=a,b,c</span><span class="ep-d">batch read (20 max)</span></div>
+      <div class="ep"><span class="tag">PUT</span><span class="ep-u">/</span><span class="ep-d">contribute markdown</span></div>
+      <div class="ep"><span class="tag">POST</span><span class="ep-u">/confirm</span><span class="ep-d">verify entry integrity</span></div>
     </div>
 
     <div class="section">
