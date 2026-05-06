@@ -184,11 +184,14 @@ function validateContent(markdown: string): string | null {
   const injectionThreshold = stripped.length > 10_000 ? 3 : 1;
   if (injectionHits >= injectionThreshold) return "prompt injection detected";
 
-  // Malicious content check (outside code blocks only, first 20KB)
+  // Malicious content check — threshold based (docs discuss JS security topics)
   const maliciousScan = stripped.slice(0, 20_000);
+  let maliciousHits = 0;
   for (const p of MALICIOUS_CONTENT_PATTERNS) {
-    if (p.test(maliciousScan)) return "malicious content detected";
+    if (p.test(maliciousScan)) maliciousHits++;
   }
+  const maliciousThreshold = stripped.length > 5_000 ? 4 : 2;
+  if (maliciousHits >= maliciousThreshold) return "malicious content detected";
 
   // Language diversity check — reject extreme spam (same phrases over and over)
   const words = stripped.toLowerCase().match(/[a-z]{4,}/g) || [];
