@@ -1422,7 +1422,7 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
 
       for (const p of sources) {
         p.then((r) => {
-          if (!resolved && r && r.markdown.length >= 200) {
+          if (!resolved && r && r.markdown.length >= 500) {
             resolved = true;
             resolve(r);
           }
