@@ -1270,28 +1270,28 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
 
 async function fetchMarkdownLive(url: string): Promise<{ markdown: string; source: string } | null> {
 
-  // === TIER 1: Jina Reader (best quality markdown) ===
+  // === ALL SOURCES IN PARALLEL — first good result wins immediately ===
   try {
-    const resp = await fetch(`https://r.jina.ai/${url}`, {
-      headers: { Accept: "text/markdown" },
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (resp.ok) {
-      const md = await resp.text();
-      if (md.length >= 200) return { markdown: md, source: "jina" };
-    }
-  } catch {}
+    // Race all sources — resolve on first success, don't wait for stragglers
+    const sources: Promise<{ markdown: string; source: string; quality: number } | null>[] = [
 
-  // === TIER 2: Parallel — race Codetabs, Wayback, Arquivo.pt, raw fetch ===
-  try {
-    const tier2 = await Promise.allSettled([
+      // Jina Reader (best quality — gets preference bonus)
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
+        const resp = await fetch(`https://r.jina.ai/${url}`, {
+          headers: { Accept: "text/markdown" },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!resp.ok) return null;
+        const md = await resp.text();
+        return md.length >= 200 ? { markdown: md, source: "jina", quality: 10 } : null;
+      })(),
 
       // Codetabs CORS proxy
       (async (): Promise<{ markdown: string; source: string } | null> => {
         const resp = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10_000) });
         if (!resp.ok) return null;
         const md = convertHtmlToMarkdown(await resp.text());
-        return md.length >= 200 ? { markdown: md, source: "codetabs" } : null;
+        return md.length >= 200 ? { markdown: md, source: "codetabs", quality: 5 } : null;
       })(),
 
       // Wayback Machine
@@ -1305,7 +1305,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         const pageResp = await fetch(rawUrl, { signal: AbortSignal.timeout(10_000) });
         if (!pageResp.ok) return null;
         const md = convertHtmlToMarkdown(await pageResp.text());
-        return md.length >= 200 ? { markdown: md, source: "wayback" } : null;
+        return md.length >= 200 ? { markdown: md, source: "wayback", quality: 6 } : null;
       })(),
 
       // Arquivo.pt (Portuguese web archive — surprisingly broad)
@@ -1321,7 +1321,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         const pageResp = await fetch(replayUrl, { signal: AbortSignal.timeout(12_000) });
         if (!pageResp.ok) return null;
         const md = convertHtmlToMarkdown(await pageResp.text());
-        return md.length >= 200 ? { markdown: md, source: "arquivo" } : null;
+        return md.length >= 200 ? { markdown: md, source: "arquivo", quality: 6 } : null;
       })(),
 
       // Raw fetch with browser UA
@@ -1336,7 +1336,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         });
         if (!resp.ok) return null;
         const md = convertHtmlToMarkdown(await resp.text());
-        return md.length >= 200 ? { markdown: md, source: "raw" } : null;
+        return md.length >= 200 ? { markdown: md, source: "raw", quality: 4 } : null;
       })(),
 
       // Google Cache
@@ -1349,7 +1349,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         const html = await resp.text();
         if (html.toLowerCase().includes("unusual traffic") || html.toLowerCase().includes("captcha")) return null;
         const md = convertHtmlToMarkdown(html);
-        return md.length >= 200 ? { markdown: md, source: "google-cache" } : null;
+        return md.length >= 200 ? { markdown: md, source: "google-cache", quality: 5 } : null;
       })(),
 
       // archive.ph via timemap (find snapshot, fetch via raw)
@@ -1379,7 +1379,7 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
             const html = await pageResp.text();
             if (html.toLowerCase().includes("captcha") || html.toLowerCase().includes("security check")) continue;
             const md = convertHtmlToMarkdown(html);
-            if (md.length >= 200) return { markdown: md, source: "archive-ph" };
+            if (md.length >= 200) return { markdown: md, source: "archive-ph", quality: 6 };
           } catch { continue; }
         }
         return null;
@@ -1390,20 +1390,32 @@ async function fetchMarkdownLive(url: string): Promise<{ markdown: string; sourc
         const resp = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10_000) });
         if (!resp.ok) return null;
         const md = convertHtmlToMarkdown(await resp.text());
-        return md.length >= 200 ? { markdown: md, source: "allorigins" } : null;
+        return md.length >= 200 ? { markdown: md, source: "allorigins", quality: 4 } : null;
       })(),
-    ]);
+    ];
 
-    // Pick the best result from tier 2
-    let best: { markdown: string; source: string } | null = null;
-    for (const result of tier2) {
-      if (result.status === "fulfilled" && result.value) {
-        if (!best || result.value.markdown.length > best.markdown.length) {
-          best = result.value;
-        }
+    // First-success-wins: resolve as soon as any source returns valid content
+    const result = await new Promise<{ markdown: string; source: string; quality: number } | null>((resolve) => {
+      let resolved = false;
+      let pending = sources.length;
+
+      for (const p of sources) {
+        p.then((r) => {
+          if (!resolved && r && r.markdown.length >= 200) {
+            resolved = true;
+            resolve(r);
+          }
+        }).catch(() => {}).finally(() => {
+          pending--;
+          if (pending === 0 && !resolved) resolve(null);
+        });
       }
-    }
-    if (best) return best;
+
+      // Safety timeout — don't wait more than 15s total
+      setTimeout(() => { if (!resolved) { resolved = true; resolve(null); } }, 15_000);
+    });
+
+    if (result) return result;
   } catch {}
 
   // === TIER 3: OG Meta fallback (guaranteed to get something) ===
