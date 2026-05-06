@@ -3092,6 +3092,45 @@ export default {
     // Static pages
     if (method === "GET" && url.pathname === "/dmca") return dmcaPage();
     if (method === "GET" && url.pathname === "/terms") return termsPage();
+    if (method === "GET" && url.pathname === "/privacy") return makePage("Privacy", `
+      <h1>&gt; privacy policy</h1>
+
+      <h2>what we collect</h2>
+      <p>When you use the agentsweb.org Chrome extension, we collect <strong>only the web page content you explicitly choose to share</strong> by clicking the "Cache for AI agents" button. This content is the markdown text extracted from the page you are viewing.</p>
+
+      <h2>what we don't collect</h2>
+      <ul>
+        <li>No personally identifiable information (name, email, address)</li>
+        <li>No browsing history or web history</li>
+        <li>No authentication credentials or passwords</li>
+        <li>No financial or payment information</li>
+        <li>No location data</li>
+        <li>No health information</li>
+        <li>No user activity tracking (clicks, keystrokes, mouse movements)</li>
+        <li>No cookies or tracking pixels</li>
+        <li>No analytics or telemetry</li>
+      </ul>
+
+      <h2>how content is used</h2>
+      <p>Shared page content is stored on agentsweb.org as cached markdown and made available to AI agents via our public API. The content is associated with the page URL — not with you. We have no way to identify who submitted any cached page.</p>
+
+      <h2>data retention</h2>
+      <p>Cached content expires automatically based on TTL policies (1-30 days depending on content type). Nothing is stored permanently.</p>
+
+      <h2>data sharing</h2>
+      <p>Cached content is served publicly via the agentsweb.org API. That is the entire purpose of the extension — to share web content with AI agents. We do not sell data to third parties or use it for advertising, profiling, or any purpose beyond the stated cache function.</p>
+
+      <h2>your rights</h2>
+      <p>Content owners can request immediate removal of any cached content via our <a href="/dmca">DMCA &amp; takedown policy</a>. Email <strong>dmca@agentsweb.org</strong> for removal requests.</p>
+
+      <h2>no account required</h2>
+      <p>The extension works without any account, login, or registration. We do not create user profiles or track individual users in any way.</p>
+
+      <h2>contact</h2>
+      <p>For privacy concerns, email <strong>dmca@agentsweb.org</strong>.</p>
+
+      <p>Last updated: May 2026</p>
+    `);
     if (method === "GET" && url.pathname === "/docs") return docsPage();
     if (method === "GET" && url.pathname === "/security") return securityPage();
     if (method === "GET" && url.pathname === "/about") return aboutPage();
