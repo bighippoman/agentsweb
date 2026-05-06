@@ -3,6 +3,8 @@ import { convertHtmlToMarkdown } from "./html-to-md.js";
 interface Env {
   CACHE: KVNamespace;
   ADMIN_SECRET: string;
+  CF_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
 }
 
 interface CacheEntry {
@@ -147,7 +149,7 @@ const ZERO_WIDTH_DENSITY_THRESHOLD = 0.01; // >1% zero-width chars = suspicious
 
 function validateContent(markdown: string): string | null {
   if (markdown.length < 200) return "too short";
-  if (markdown.length > 512_000) return "too large";
+  if (markdown.length > 10_000_000) return "too large";
 
   // Check for invisible character attacks
   if (INVISIBLE_CHAR_REGEX.test(markdown)) return "hidden characters detected";
@@ -497,6 +499,7 @@ function getTtl(trustLevel: number, url: string): number {
 interface RequestContext {
   ctx: ExecutionContext;
   kv: KVNamespace;
+  env: Env;
 }
 
 let _rc: RequestContext | null = null;
@@ -1245,7 +1248,7 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
       } catch {}
     }
 
-    const fetched = await fetchMarkdownLive(result.url);
+    const fetched = await fetchMarkdownLive(result.url, _rc?.env);
     if (!fetched || validateContent(fetched.markdown)) {
       pages.push({ ...result, markdown: null, source: fetched ? "filtered" : "fetch failed" });
       return;
@@ -1268,14 +1271,32 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
 // Multi-tier live fetcher — not dependent on any single service
 // ============================================================
 
-async function fetchMarkdownLive(url: string): Promise<{ markdown: string; source: string } | null> {
+async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: string; source: string } | null> {
 
   // === ALL SOURCES IN PARALLEL — first good result wins immediately ===
   try {
     // Race all sources — resolve on first success, don't wait for stragglers
     const sources: Promise<{ markdown: string; source: string; quality: number } | null>[] = [
 
-      // Jina Reader (best quality — gets preference bonus)
+      // Cloudflare Browser Run (renders JS, best for SPAs — highest quality)
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
+        if (!env?.CF_API_TOKEN || !env?.CF_ACCOUNT_ID) return null;
+        const resp = await fetch(
+          `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/browser-rendering/markdown`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${env.CF_API_TOKEN}` },
+            body: JSON.stringify({ url }),
+            signal: AbortSignal.timeout(12_000),
+          }
+        );
+        if (!resp.ok) return null;
+        const data = (await resp.json()) as { success?: boolean; result?: string };
+        if (!data.success || !data.result) return null;
+        return data.result.length >= 200 ? { markdown: data.result, source: "browser-run", quality: 12 } : null;
+      })(),
+
+      // Jina Reader (best quality markdown from text — gets preference bonus)
       (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
         const resp = await fetch(`https://r.jina.ai/${url}`, {
           headers: { Accept: "text/markdown" },
@@ -1480,7 +1501,7 @@ function extractPartialContent(markdown: string, url: string): string | null {
   return before + "\n\n---\n*[Content truncated — full article requires subscription at original source]*";
 }
 
-async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string, forceRefresh = false): Promise<Response> {
+async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string, forceRefresh = false, env?: Env): Promise<Response> {
   const urlErr = validateUrl(url);
   if (urlErr) return json({ error: urlErr }, 400);
   if (!(await checkRateLimit(kv, ip, "write"))) return json({ error: "rate limited" }, 429);
@@ -1500,7 +1521,7 @@ async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string, for
     }
   }
 
-  const result = await fetchMarkdownLive(url);
+  const result = await fetchMarkdownLive(url, env);
   if (!result) return json({ error: "all fetchers failed" }, 502);
 
   const rejection = validateContent(result.markdown);
@@ -2574,7 +2595,7 @@ ${pages.map((p) => `  <url>
 export default {
   // Cache warming cron — refreshes entries approaching expiry
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    _rc = { ctx, kv: env.CACHE };
+    _rc = { ctx, kv: env.CACHE, env };
     const kv = env.CACHE;
 
     // Get URL index
@@ -2618,7 +2639,7 @@ export default {
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    _rc = { ctx, kv: env.CACHE };
+    _rc = { ctx, kv: env.CACHE, env };
     const admin = isAdmin(request, env);
     const method = request.method;
     if (!["GET", "PUT", "POST", "OPTIONS", "HEAD"].includes(method)) {
@@ -2735,7 +2756,7 @@ export default {
       // Fetch on demand — give URL, get markdown, auto-cached
       if (method === "GET" && url.pathname === "/fetch" && url.searchParams.has("url")) {
         const forceRefresh = url.searchParams.get("refresh") === "true" && admin;
-        return await handleFetchAndCache(url.searchParams.get("url")!, env.CACHE, ip, forceRefresh);
+        return await handleFetchAndCache(url.searchParams.get("url")!, env.CACHE, ip, forceRefresh, env);
       }
 
       if (method === "POST" && url.pathname === "/takedown") {
