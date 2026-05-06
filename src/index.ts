@@ -532,6 +532,59 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+/** Extract a specific section by heading match */
+function extractSection(markdown: string, query: string): string | null {
+  const queryLower = query.toLowerCase();
+  const lines = markdown.split("\n");
+
+  let bestStart = -1;
+  let bestLevel = 0;
+  let bestScore = 0;
+
+  // Find the heading that best matches the query
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^(#{1,6})\s+(.+)/);
+    if (!match) continue;
+
+    const level = match[1].length;
+    const heading = match[2].toLowerCase().replace(/[^a-z0-9\s]/g, "");
+    const queryWords = queryLower.split(/\s+/).filter((w) => w.length > 2);
+
+    let score = 0;
+    for (const word of queryWords) {
+      if (heading.includes(word)) score++;
+    }
+    // Bonus for exact substring match
+    if (heading.includes(queryLower)) score += 3;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestStart = i;
+      bestLevel = level;
+    }
+  }
+
+  if (bestStart === -1 || bestScore === 0) return null;
+
+  // Extract from the matched heading to the next heading of same or higher level
+  const sectionLines = [lines[bestStart]];
+  for (let i = bestStart + 1; i < lines.length; i++) {
+    const headingMatch = lines[i].match(/^(#{1,6})\s/);
+    if (headingMatch && headingMatch[1].length <= bestLevel) break;
+    sectionLines.push(lines[i]);
+  }
+
+  const section = sectionLines.join("\n").trim();
+  return section.length >= 50 ? section : null;
+}
+
+/** List all headings in a document (table of contents) */
+function extractHeadings(markdown: string): string[] {
+  return (markdown.match(/^#{1,6}\s+.+$/gm) || []).map((h) =>
+    h.replace(/^#+\s+/, "").replace(/\[.*?\]\(.*?\)/g, "").trim()
+  );
+}
+
 /** Truncate markdown to approximately N tokens, breaking at paragraph boundaries */
 function truncateToTokens(markdown: string, maxTokens: number): string {
   const maxChars = maxTokens * 4;
@@ -623,13 +676,13 @@ function detectContentType(markdown: string, url: string): string {
   return "article";
 }
 
-async function handleRead(url: string, kv: KVNamespace, ip: string, request: Request, maxTokens = 0, clean = true): Promise<Response> {
+async function handleRead(url: string, kv: KVNamespace, ip: string, request: Request, maxTokens = 0, clean = true, section = "", toc = false): Promise<Response> {
   const urlErr = validateUrl(url);
   if (urlErr) return json({ error: urlErr }, 400);
 
   // --- EDGE CACHE: check CF Cache API first (sub-1ms) ---
-  // Skip edge cache if agent params are set (truncation, clean=false)
-  const hasAgentParams = maxTokens > 0 || !clean;
+  // Skip edge cache if agent params are set
+  const hasAgentParams = maxTokens > 0 || !clean || !!section || toc;
   const cache = caches.default;
   const cacheKey = new Request(`https://agentsweb.org/_cache/${encodeURIComponent(normalizeUrlForCache(url))}`, { method: "GET" });
   const cachedResponse = !hasAgentParams ? await cache.match(cacheKey) : null;
@@ -674,10 +727,40 @@ async function handleRead(url: string, kv: KVNamespace, ip: string, request: Req
 
   const stale = (Date.now() - entry.updated_at) > getTtl(entry.trust_level, entry.url) * 750;
 
-  // Agent-friendly processing
-  let markdown = clean ? cleanForAgent(entry.markdown) : entry.markdown;
-  const totalTokens = estimateTokens(markdown);
-  const truncated = maxTokens > 0 && totalTokens > maxTokens;
+  // Section/TOC extraction runs on RAW markdown (before cleaning strips headings)
+  const rawMarkdown = entry.markdown;
+
+  // Table of contents mode
+  if (toc) {
+    const headings = extractHeadings(rawMarkdown);
+    return json({
+      url: entry.url,
+      headings,
+      count: headings.length,
+      trust_level: entry.trust_level,
+    });
+  }
+
+  // Section extraction
+  let markdown: string;
+  if (section) {
+    const extracted = extractSection(rawMarkdown, section);
+    if (!extracted) {
+      const headings = extractHeadings(rawMarkdown);
+      return json({
+        error: "section not found",
+        query: section,
+        available_headings: headings.slice(0, 20),
+      }, 404);
+    }
+    markdown = clean ? cleanForAgent(extracted) : extracted;
+  } else {
+    markdown = clean ? cleanForAgent(rawMarkdown) : rawMarkdown;
+  }
+
+  const totalTokens = estimateTokens(clean ? cleanForAgent(rawMarkdown) : rawMarkdown);
+  const currentTokens = estimateTokens(markdown);
+  const truncated = maxTokens > 0 && currentTokens > maxTokens;
   if (truncated) markdown = truncateToTokens(markdown, maxTokens);
   const contentType = detectContentType(entry.markdown, entry.url);
 
@@ -687,7 +770,7 @@ async function handleRead(url: string, kv: KVNamespace, ip: string, request: Req
     trust_level: entry.trust_level,
     source: entry.source,
     content_type: contentType,
-    tokens: truncated ? estimateTokens(markdown) : totalTokens,
+    tokens: truncated ? estimateTokens(markdown) : currentTokens,
     total_tokens: totalTokens,
     ...(truncated ? { truncated: true } : {}),
     age_seconds: Math.floor((Date.now() - entry.updated_at) / 1000),
@@ -2710,8 +2793,10 @@ export default {
     try {
       if (method === "GET" && url.pathname === "/" && url.searchParams.has("url")) {
         const maxTokens = parseInt(url.searchParams.get("max_tokens") || "0") || 0;
-        const clean = url.searchParams.get("clean") !== "false"; // default: clean
-        return await handleRead(url.searchParams.get("url")!, env.CACHE, ip, request, maxTokens, clean);
+        const clean = url.searchParams.get("clean") !== "false";
+        const section = url.searchParams.get("section") || "";
+        const toc = url.searchParams.get("toc") === "true";
+        return await handleRead(url.searchParams.get("url")!, env.CACHE, ip, request, maxTokens, clean, section, toc);
       }
 
       if (method === "GET" && url.pathname === "/raw" && url.searchParams.has("url")) {
