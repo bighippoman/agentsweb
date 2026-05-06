@@ -597,62 +597,81 @@ interface Chunk {
   keywords: string[]; // top keywords for search matching
 }
 
-/** Split markdown into semantic chunks of ~300-800 tokens */
+/** Split markdown into complete sections — one chunk per heading.
+ *  Keeps full context: heading + all content + code examples until next heading.
+ *  Large sections (>3000 tokens) are split at paragraph boundaries to stay usable. */
 function chunkMarkdown(markdown: string, url: string): Chunk[] {
   const chunks: Chunk[] = [];
   const lines = markdown.split("\n");
 
-  let currentHeading = "";
-  let currentLines: string[] = [];
-  let currentTokens = 0;
+  // First pass: find all heading positions
+  const headingPositions: Array<{ line: number; level: number; text: string }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6})\s+(.+)/);
+    if (m) headingPositions.push({ line: i, level: m[1].length, text: m[2].replace(/\[.*?\]\(.*?\)/g, "").trim() });
+  }
 
-  const flush = () => {
-    const text = currentLines.join("\n").trim();
-    if (text.length < 100) return; // skip tiny fragments
-
-    const tokens = estimateTokens(text);
-    const words = text.toLowerCase().match(/[a-z]{3,}/g) || [];
-    const wordFreq = new Map<string, number>();
-    for (const w of words) {
-      if (w.length < 4) continue;
-      wordFreq.set(w, (wordFreq.get(w) || 0) + 1);
+  // If no headings, treat whole doc as one chunk
+  if (headingPositions.length === 0) {
+    const text = markdown.trim();
+    if (text.length >= 100) {
+      const tokens = estimateTokens(text);
+      chunks.push({ url, heading: "", text: tokens > 3000 ? text.slice(0, 12000) : text, tokens: Math.min(tokens, 3000), keywords: extractKeywords(text) });
     }
-    // Top 10 keywords by frequency
-    const keywords = [...wordFreq.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([w]) => w);
+    return chunks;
+  }
 
-    chunks.push({ url, heading: currentHeading, text, tokens, keywords });
-    currentLines = [];
-    currentTokens = 0;
-  };
+  // Second pass: extract content between headings
+  for (let i = 0; i < headingPositions.length; i++) {
+    const start = headingPositions[i].line;
+    const end = i + 1 < headingPositions.length ? headingPositions[i + 1].line : lines.length;
+    const heading = headingPositions[i].text;
 
-  for (const line of lines) {
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)/);
+    const sectionText = lines.slice(start, end).join("\n").trim();
+    if (sectionText.length < 100) continue;
 
-    if (headingMatch) {
-      // New heading — flush current chunk
-      if (currentLines.length > 0) flush();
-      currentHeading = headingMatch[2].replace(/\[.*?\]\(.*?\)/g, "").trim();
-      currentLines.push(line);
-      currentTokens += estimateTokens(line);
-      continue;
-    }
+    const tokens = estimateTokens(sectionText);
 
-    currentLines.push(line);
-    currentTokens += estimateTokens(line);
-
-    // Flush at ~500 tokens on paragraph boundaries
-    if (currentTokens >= 500 && line.trim() === "") {
-      flush();
+    // If section is huge (>3000 tokens), split at paragraph boundaries
+    if (tokens > 3000) {
+      const paragraphs = sectionText.split("\n\n");
+      let subChunk = "";
+      for (const para of paragraphs) {
+        if (estimateTokens(subChunk + para) > 2500 && subChunk.length > 200) {
+          chunks.push({ url, heading, text: subChunk.trim(), tokens: estimateTokens(subChunk), keywords: extractKeywords(subChunk) });
+          subChunk = para + "\n\n";
+        } else {
+          subChunk += para + "\n\n";
+        }
+      }
+      if (subChunk.trim().length > 100) {
+        chunks.push({ url, heading, text: subChunk.trim(), tokens: estimateTokens(subChunk), keywords: extractKeywords(subChunk) });
+      }
+    } else {
+      chunks.push({ url, heading, text: sectionText, tokens, keywords: extractKeywords(sectionText) });
     }
   }
 
-  // Flush remainder
-  if (currentLines.length > 0) flush();
+  // Add any content before the first heading
+  if (headingPositions[0].line > 0) {
+    const preamble = lines.slice(0, headingPositions[0].line).join("\n").trim();
+    if (preamble.length >= 100) {
+      chunks.push({ url, heading: "(preamble)", text: preamble, tokens: estimateTokens(preamble), keywords: extractKeywords(preamble) });
+    }
+  }
 
   return chunks;
+}
+
+function extractKeywords(text: string): string[] {
+  const words = text.toLowerCase().match(/[a-z]{4,}/g) || [];
+  const freq = new Map<string, number>();
+  const stopwords = new Set(["this","that","with","from","have","been","will","would","could","should","about","their","there","which","these","those","more","some","than","when","what","into","also","each","make","like","just","over","such","only"]);
+  for (const w of words) {
+    if (stopwords.has(w)) continue;
+    freq.set(w, (freq.get(w) || 0) + 1);
+  }
+  return [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([w]) => w);
 }
 
 /** Search chunks by keyword matching — returns most relevant chunks */
