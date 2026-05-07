@@ -1046,6 +1046,17 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
     contributors: [instanceId],
   };
 
+  // Store previous hash for change detection before overwriting
+  const prevEntry = await kv.get(key);
+  if (prevEntry) {
+    try {
+      const prev: CacheEntry = JSON.parse(prevEntry);
+      if (prev.content_hash !== contentHash) {
+        await kv.put(`prev:${await hashUrl(url)}`, prev.content_hash, { expirationTtl: 86400 * 7 });
+      }
+    } catch {}
+  }
+
   await kv.put(key, JSON.stringify(entry), {
     expirationTtl: getTtl(1, url),
   });
@@ -1109,6 +1120,40 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
       if (searchIndex.length > 10_000) searchIndex.splice(0, searchIndex.length - 10_000);
     }
     await kv.put("index:search", JSON.stringify(searchIndex));
+  })());
+
+  // Auto-crawl: extract internal links and pre-cache in background
+  waitUntilBg((async () => {
+    try {
+      const linkRegex = /\[.*?\]\((https?:\/\/[^)]+)\)/g;
+      const parsed = new URL(url);
+      const links: string[] = [];
+      let m;
+      while ((m = linkRegex.exec(markdown)) !== null) {
+        try {
+          const linkUrl = new URL(m[1]);
+          // Only same-domain internal links
+          if (linkUrl.hostname === parsed.hostname && linkUrl.pathname !== parsed.pathname) {
+            links.push(linkUrl.href);
+          }
+        } catch {}
+      }
+      // Cache up to 5 linked pages in background
+      const unique = [...new Set(links)].slice(0, 5);
+      for (const link of unique) {
+        const linkHash = await hashUrl(link);
+        const existing = await kv.get(`cache:${linkHash}`);
+        if (existing) continue; // already cached
+        // Fetch and cache — lightweight, don't block
+        const fetched = await fetchMarkdownLive(link, _rc?.env);
+        if (fetched && fetched.markdown.length >= 200 && !validateContent(fetched.markdown)) {
+          const ch = await hashContent(fetched.markdown);
+          const e: CacheEntry = { url: link, markdown: fetched.markdown, trust_level: 1, source: `auto-crawl (${fetched.source})`, created_at: Date.now(), updated_at: Date.now(), content_hash: ch, size: fetched.markdown.length, contributors: [] };
+          await kv.put(`cache:${linkHash}`, JSON.stringify(e), { expirationTtl: getTtl(1, link) });
+          incrementStat(kv, "writes");
+        }
+      }
+    } catch {}
   })());
 
   return json({ status: "accepted", trust_level: 1 });
@@ -3042,6 +3087,89 @@ export default {
             relevance: m.relevance,
           })),
           pages_searched: searchUrls.length,
+        });
+      }
+
+      // /context — multi-page briefing: combine chunks from multiple pages
+      if (method === "GET" && url.pathname === "/context" && url.searchParams.has("q")) {
+        const query = url.searchParams.get("q")!;
+        const maxPages = Math.min(parseInt(url.searchParams.get("pages") || "5"), 10);
+        if (query.length < 3) return json({ error: "query too short" }, 400);
+
+        const indexRaw = await env.CACHE.get("index:urls");
+        if (!indexRaw) return json({ error: "no cached content" }, 404);
+        const urls: string[] = JSON.parse(indexRaw);
+
+        const allChunks: Array<{ url: string; heading: string; text: string; tokens: number; relevance: number }> = [];
+
+        await Promise.all(urls.slice(0, 50).map(async (cachedUrl) => {
+          const urlHash = await hashUrl(cachedUrl);
+          const raw = await env.CACHE.get(`chunks:${urlHash}`);
+          if (!raw) return;
+          const chunks: Chunk[] = JSON.parse(raw);
+          const matched = searchChunks(chunks, query, 2);
+          for (const m of matched) {
+            const queryWords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+            const searchText = `${m.heading} ${m.text}`.toLowerCase();
+            let relevance = 0;
+            for (const w of queryWords) {
+              if (m.heading.toLowerCase().includes(w)) relevance += 5;
+              if (m.keywords.includes(w)) relevance += 3;
+              if (searchText.includes(w)) relevance += 1;
+            }
+            if (queryWords.every((w) => searchText.includes(w))) relevance += 10;
+            allChunks.push({ url: m.url, heading: m.heading, text: m.text, tokens: m.tokens, relevance });
+          }
+        }));
+
+        const top = allChunks.sort((a, b) => b.relevance - a.relevance).slice(0, maxPages * 2);
+
+        // Combine into a single briefing
+        let briefing = `# Research: ${query}\n\n`;
+        let totalTokens = 0;
+        const sources: string[] = [];
+        for (const chunk of top) {
+          briefing += `## ${chunk.heading} (${chunk.url.split("/").slice(2, 4).join("/")})\n\n${chunk.text}\n\n---\n\n`;
+          totalTokens += chunk.tokens;
+          if (!sources.includes(chunk.url)) sources.push(chunk.url);
+        }
+
+        return json({
+          query,
+          briefing,
+          tokens: totalTokens,
+          sources,
+          chunks_used: top.length,
+        });
+      }
+
+      // /changes — track content changes for a URL
+      if (method === "GET" && url.pathname === "/changes" && url.searchParams.has("url")) {
+        const targetUrl = url.searchParams.get("url")!;
+        const urlHash = await hashUrl(targetUrl);
+
+        const cached = await env.CACHE.get(`cache:${urlHash}`);
+        if (!cached) return json({ error: "page not cached" }, 404);
+
+        const entry: CacheEntry = JSON.parse(cached);
+        const prevHash = await env.CACHE.get(`prev:${urlHash}`);
+
+        if (!prevHash || prevHash === entry.content_hash) {
+          return json({
+            url: targetUrl,
+            changed: false,
+            last_updated: new Date(entry.updated_at).toISOString(),
+            age_seconds: Math.floor((Date.now() - entry.updated_at) / 1000),
+          });
+        }
+
+        // Content changed — fetch the old version if we stored it
+        return json({
+          url: targetUrl,
+          changed: true,
+          last_updated: new Date(entry.updated_at).toISOString(),
+          current_hash: entry.content_hash.slice(0, 16),
+          previous_hash: prevHash.slice(0, 16),
         });
       }
 
