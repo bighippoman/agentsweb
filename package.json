@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "predeploy": "tsc --noEmit",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {

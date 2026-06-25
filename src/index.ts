@@ -1,4 +1,8 @@
 import { convertHtmlToMarkdown } from "./html-to-md.js";
+// node:async_hooks is provided at runtime by the Workers `nodejs_compat` flag
+// (see wrangler.toml). Its types aren't in @cloudflare/workers-types, so a minimal
+// ambient declaration lives in src/async-hooks.d.ts (committed alongside this file).
+import { AsyncLocalStorage } from "node:async_hooks";
 
 interface Env {
   CACHE: KVNamespace;
@@ -165,12 +169,14 @@ function validateContent(markdown: string): string | null {
     if (p.test(scanHead)) return "login wall detected";
   }
 
-  // Strip code blocks AND HTML tags before scanning — docs legitimately contain
-  // <script>, onclick, etc. in code examples and raw HTML dumps
-  const stripped = markdown
+  // Strip code blocks before scanning — docs legitimately contain <script>,
+  // onclick, eval(), etc. inside code examples. `codeStripped` keeps HTML tags
+  // (so the malicious-content scan can still see them); `stripped` also removes
+  // tags for the text-based prompt-injection scan.
+  const codeStripped = markdown
     .replace(/```[\s\S]*?```/g, "")        // fenced code blocks
-    .replace(/`[^`]+`/g, "")              // inline code
-    .replace(/<[^>]+>/g, "");             // HTML tags (from raw HTML content)
+    .replace(/`[^`]+`/g, "");              // inline code
+  const stripped = codeStripped.replace(/<[^>]+>/g, ""); // tags removed for injection scan
 
   // Scan FULL document for injection — no blind spots
   // But only flag if multiple patterns match (single hit could be legitimate
@@ -184,13 +190,15 @@ function validateContent(markdown: string): string | null {
   const injectionThreshold = stripped.length > 10_000 ? 3 : 1;
   if (injectionHits >= injectionThreshold) return "prompt injection detected";
 
-  // Malicious content check — threshold based (docs discuss JS security topics)
-  const maliciousScan = stripped.slice(0, 20_000);
+  // Malicious content check — scanned on code-stripped content with TAGS
+  // PRESERVED so <script>, <iframe>, onerror= outside code examples are actually
+  // detectable. Threshold based (docs discuss JS security topics in prose).
+  const maliciousScan = codeStripped.slice(0, 20_000);
   let maliciousHits = 0;
   for (const p of MALICIOUS_CONTENT_PATTERNS) {
     if (p.test(maliciousScan)) maliciousHits++;
   }
-  const maliciousThreshold = stripped.length > 5_000 ? 4 : 2;
+  const maliciousThreshold = codeStripped.length > 5_000 ? 4 : 2;
   if (maliciousHits >= maliciousThreshold) return "malicious content detected";
 
   // Language diversity check — reject extreme spam (same phrases over and over)
@@ -391,23 +399,33 @@ async function hashContent(content: string): Promise<string> {
 }
 
 function normalizeUrlForCache(url: string): string {
-  let u = url.toLowerCase().replace(/\/+$/, "");
-  // Normalize protocol to https
-  u = u.replace(/^http:\/\//, "https://");
-  // Strip www
-  u = u.replace(/^(https:\/\/)www\./, "$1");
-  // Strip common tracking params
+  // Only the scheme and host are case-insensitive. Paths and query strings are
+  // case-SENSITIVE on most servers (GitHub /Org/Repo, base64 query params, many
+  // CMSes), so lowercasing the whole URL collided distinct resources and stored
+  // a lowercased entry.url that could 404 on re-fetch.
+  let raw = url.trim().replace(/^http:\/\//i, "https://");
+  if (!/^https?:\/\//i.test(raw)) raw = "https://" + raw;
   try {
-    const parsed = new URL(u);
+    const parsed = new URL(raw);
+    parsed.protocol = "https:";
+    parsed.hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    parsed.hash = "";
+    // Strip common tracking params (keys are conventionally lowercase)
     for (const key of [...parsed.searchParams.keys()]) {
-      if (/^(utm_|fbclid|gclid|ref|mc_|_ga|msclkid)/.test(key)) {
+      if (/^(utm_|fbclid|gclid|ref|mc_|_ga|msclkid)/i.test(key)) {
         parsed.searchParams.delete(key);
       }
     }
-    // Remove empty query string
-    u = parsed.toString().replace(/\?$/, "");
-  } catch {}
-  return u;
+    let out = parsed.toString().replace(/\?$/, ""); // drop empty query string
+    // Strip trailing slash only on NON-root paths. `new URL().toString()` re-adds
+    // "/" for the root, and the previous impl kept it, so root URLs must stay
+    // "https://host/" to match existing cache keys (avoids a deploy-time flush).
+    if (parsed.pathname !== "/") out = out.replace(/\/+$/, "");
+    return out;
+  } catch {
+    // Best-effort fallback: lowercase scheme/host region only, strip trailing slash
+    return raw.replace(/^(https:\/\/[^/?#]+)/, (m) => m.toLowerCase()).replace(/\/+$/, "");
+  }
 }
 
 async function hashUrl(url: string): Promise<string> {
@@ -498,25 +516,33 @@ function getTtl(trustLevel: number, url: string): number {
 // Stats (via waitUntil to survive after response)
 // ============================================================
 
-// Thread-safe context — captured per-request, never shared
+// Per-request context via AsyncLocalStorage. Each request's async chain gets its
+// own store, so deferred background work (waitUntil, stats) always binds to the
+// CURRENT request's ExecutionContext — never another in-flight request's, which
+// a mutable module global would leak under the isolate's concurrent execution.
 interface RequestContext {
   ctx: ExecutionContext;
   kv: KVNamespace;
   env: Env;
 }
 
-let _rc: RequestContext | null = null;
+const rcStore = new AsyncLocalStorage<RequestContext>();
 
 function incrementStat(kv: KVNamespace, stat: string): void {
   const p = kv.get(`stats:${stat}`).then((v) => {
     const n = parseInt(v || "0", 10) + 1;
     return kv.put(`stats:${stat}`, String(n));
   }).catch(() => {});
-  _rc?.ctx.waitUntil(p);
+  waitUntilBg(p);
 }
 
 function waitUntilBg(p: Promise<unknown>): void {
-  _rc?.ctx.waitUntil(p);
+  const rc = rcStore.getStore();
+  try {
+    rc?.ctx.waitUntil(p);
+  } catch {
+    /* ctx unavailable (e.g. already returned) — best-effort, swallow */
+  }
 }
 
 // ============================================================
@@ -730,27 +756,28 @@ function cleanForAgent(markdown: string): string {
   md = md.replace(/^Markdown Content:\s*\n/m, "");
   md = md.replace(/^Warning:.*\n/gm, "");
 
-  // Strip navigation menu blocks — runs of 3+ consecutive short link lines
+  // Strip navigation menu blocks — runs of 4+ consecutive short link lines.
+  // Shorter runs are real content links (e.g. "see also", reference lists) and
+  // are kept. Link lines are buffered, then either dropped (nav block) or
+  // flushed back into the output (genuine links) when the run ends.
   const lines = md.split("\n");
   const cleaned: string[] = [];
-  let navRun = 0;
+  let navBuffer: string[] = [];
+  const flushNav = () => {
+    if (navBuffer.length < 4) cleaned.push(...navBuffer); // keep genuine link lines
+    navBuffer = [];
+  };
   for (const line of lines) {
     const trimmed = line.trim();
     const isNavLink = /^\*?\s*\[.{1,50}\]\(.*\)\s*$/.test(trimmed) && trimmed.length < 100;
     if (isNavLink) {
-      navRun++;
+      navBuffer.push(line);
     } else {
-      if (navRun >= 4) {
-        // Was a nav block — skip all the accumulated links
-        // Don't add them to cleaned
-      } else {
-        // Not a nav block — add any accumulated links back
-        // (they were real content links)
-      }
-      navRun = 0;
+      flushNav();
       cleaned.push(line);
     }
   }
+  flushNav();
   md = cleaned.join("\n");
 
   // Strip share/social/cookie/terms lines
@@ -1144,8 +1171,8 @@ async function handleWrite(body: WriteRequest, kv: KVNamespace, ip: string, admi
         const linkHash = await hashUrl(link);
         const existing = await kv.get(`cache:${linkHash}`);
         if (existing) continue; // already cached
-        // Fetch and cache — lightweight, don't block
-        const fetched = await fetchMarkdownLive(link, _rc?.env);
+        // Fetch and cache — lightweight, don't block (env resolved from store)
+        const fetched = await fetchMarkdownLive(link);
         if (fetched && fetched.markdown.length >= 200 && !validateContent(fetched.markdown)) {
           const ch = await hashContent(fetched.markdown);
           const e: CacheEntry = { url: link, markdown: fetched.markdown, trust_level: 1, source: `auto-crawl (${fetched.source})`, created_at: Date.now(), updated_at: Date.now(), content_hash: ch, size: fetched.markdown.length, contributors: [] };
@@ -1178,7 +1205,8 @@ async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string, 
     return json({ error: "valid sha256 content_hash required" }, 400);
   }
 
-  const key = `cache:${await hashUrl(url)}`;
+  const urlHash = await hashUrl(url);
+  const key = `cache:${urlHash}`;
   const raw = await kv.get(key);
   if (!raw) return json({ status: "not found" }, 404);
 
@@ -1196,7 +1224,6 @@ async function handleConfirm(body: ConfirmRequest, kv: KVNamespace, ip: string, 
       return json({ status: "already confirmed", trust_level: entry.trust_level });
     }
     // Trust rate limit — max 3 increments per hour per URL
-    const urlHash = await hashUrl(url);
     const trustRateKey = `trustrate:${urlHash}`;
     const trustIncrements = parseInt((await kv.get(trustRateKey)) || "0", 10);
     if (trustIncrements >= 3 && !admin) {
@@ -1403,6 +1430,54 @@ async function searchLocal(query: string, count: number, kv: KVNamespace): Promi
   }));
 }
 
+/** Pick the most relevant cached URLs for a cross-page query using the
+ *  title/snippet search index. Falls back to the most-RECENTLY cached URLs
+ *  (end of the index) — never the oldest, which `slice(0, N)` used to return. */
+async function selectCandidateUrls(kv: KVNamespace, query: string, limit: number): Promise<string[]> {
+  const queryWords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const add = (u: string) => { if (u && !seen.has(u)) { seen.add(u); result.push(u); } };
+
+  // Relevance pass: rank cached pages by query overlap with their indexed
+  // title/snippet (fields defensively coerced — admin-pushed entries may be malformed).
+  const searchIndexRaw = await kv.get("index:search");
+  if (searchIndexRaw && queryWords.length) {
+    try {
+      const idx: Array<{ url: string; title: string; snippet: string }> = JSON.parse(searchIndexRaw);
+      const scored = idx
+        .map((e) => {
+          const title = (e.title || "").toLowerCase();
+          const text = `${e.title || ""} ${e.snippet || ""} ${e.url || ""}`.toLowerCase();
+          let score = 0;
+          for (const w of queryWords) {
+            if (text.includes(w)) score++;
+            if (title.includes(w)) score += 2;
+          }
+          return { url: e.url, score };
+        })
+        .filter((s) => s.score > 0)
+        .sort((a, b) => b.score - a.score);
+      for (const s of scored) { if (result.length >= limit) break; add(s.url); }
+    } catch {}
+  }
+
+  // Always top up with the most-recently cached pages (index grows by push, so
+  // newest are at the end). The indexed snippet is only ~1000 chars, so a query
+  // term living DEEP in a recent page's body would be missed by the relevance
+  // pass alone — topping up with recent pages keeps those chunk-searched.
+  if (result.length < limit) {
+    const indexRaw = await kv.get("index:urls");
+    if (indexRaw) {
+      try {
+        const urls: string[] = JSON.parse(indexRaw);
+        for (let i = urls.length - 1; i >= 0 && result.length < limit; i--) add(urls[i]);
+      } catch {}
+    }
+  }
+  return result;
+}
+
 async function handleWebSearch(query: string, count: number, kv: KVNamespace, ip: string): Promise<Response> {
   if (!(await checkRateLimit(kv, ip, "read"))) return json({ error: "rate limited" }, 429);
   if (!query || query.length < 2 || query.length > 500) return json({ error: "query must be 2-500 characters" }, 400);
@@ -1507,7 +1582,7 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
       } catch {}
     }
 
-    const fetched = await fetchMarkdownLive(result.url, _rc?.env);
+    const fetched = await fetchMarkdownLive(result.url);
     if (!fetched || validateContent(fetched.markdown)) {
       pages.push({ ...result, markdown: null, source: fetched ? "filtered" : "fetch failed" });
       return;
@@ -1523,7 +1598,126 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
 
   const ordered = searchData.results.map((r) => pages.find((p) => p.url === r.url)).filter(Boolean);
   incrementStat(kv, "researches");
-  return json({ query, results: ordered, cached: ordered.filter((p) => p!.source.startsWith("cache")).length, fetched: ordered.filter((p) => p!.source === "fresh").length });
+  return json({ query, results: ordered, cached: ordered.filter((p) => p!.source.startsWith("cache")).length, fetched: ordered.filter((p) => p!.source.startsWith("fresh")).length });
+}
+
+// ============================================================
+// robots.txt — honor site opt-out (the DMCA/FAQ pages promise this)
+// ============================================================
+
+/** Match a robots.txt path pattern (supports `*` wildcard and `$` end-anchor). */
+function robotsMatch(pattern: string, path: string): boolean {
+  let re = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "*") re += ".*";
+    else if (c === "$" && i === pattern.length - 1) re += "$";
+    else re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  try { return new RegExp("^" + re).test(path); } catch { return false; }
+}
+
+/** Evaluate a robots.txt body for our agent against a path. Standard precedence:
+ *  the most specific applicable group wins (agentsweb > *), then the longest
+ *  matching rule wins, with Allow beating Disallow on ties. Fail-open. */
+function robotsPathAllowed(robotsTxt: string, path: string): boolean {
+  // Preserve blank lines: a truly blank line is a record separator (per RFC), so
+  // an empty `User-agent: agentsweb` record followed by a separate
+  // `User-agent: * / Disallow: /` block must NOT inherit the * rules. Comment-only
+  // lines are NOT separators (they may sit between a UA line and its rules).
+  const rawLines = robotsTxt.split(/\r?\n/);
+  const groups = new Map<string, { allow: string[]; disallow: string[] }>();
+  let currentAgents: string[] = [];
+  let lastWasAgent = false;
+  for (const rawLine of rawLines) {
+    const line = rawLine.replace(/#.*$/, "").trim();
+    if (line === "") {
+      if (rawLine.trim() === "") { currentAgents = []; lastWasAgent = false; } // blank = record boundary
+      continue; // comment-only line: not a separator
+    }
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const field = line.slice(0, idx).trim().toLowerCase();
+    const value = line.slice(idx + 1).trim();
+    if (field === "user-agent") {
+      if (!lastWasAgent) currentAgents = [];
+      const ua = value.toLowerCase();
+      currentAgents.push(ua);
+      if (!groups.has(ua)) groups.set(ua, { allow: [], disallow: [] });
+      lastWasAgent = true;
+    } else if (field === "allow" || field === "disallow") {
+      lastWasAgent = false;
+      for (const a of currentAgents) {
+        const g = groups.get(a);
+        if (g) (field === "allow" ? g.allow : g.disallow).push(value);
+      }
+    } else {
+      lastWasAgent = false;
+    }
+  }
+
+  const group = groups.get("agentsweb") || groups.get("*");
+  if (!group) return true;
+
+  let decision: boolean | null = null;
+  let bestLen = -1;
+  for (const rule of group.disallow) {
+    if (rule === "") continue; // empty Disallow = allow everything
+    if (robotsMatch(rule, path) && rule.length > bestLen) { bestLen = rule.length; decision = false; }
+  }
+  for (const rule of group.allow) {
+    if (rule === "") continue;
+    if (robotsMatch(rule, path) && rule.length >= bestLen) { bestLen = rule.length; decision = true; }
+  }
+  return decision === null ? true : decision;
+}
+
+// Per-isolate cache of robots.txt BODIES, keyed by host (rules vary by path, so
+// we memo the raw rules, not the decision). Dedupes the cold-path double lookup
+// (handleFetchAndCache + fetchMarkdownLive both check the same URL) and is
+// politeness toward origins. KV is still the cross-isolate persistent layer.
+const robotsRulesMemo = new Map<string, string>();
+
+/** Returns false only if the site's robots.txt disallows our agent for this path.
+ *  Fetches+caches robots.txt per host (6h KV + per-isolate memo). Fail-open. */
+async function robotsAllows(url: string, kv: KVNamespace): Promise<boolean> {
+  let host: string, path: string, protocol: string;
+  try {
+    const u = new URL(url);
+    host = u.hostname;
+    path = (u.pathname || "/") + (u.search || "");
+    protocol = u.protocol;
+  } catch {
+    return true;
+  }
+
+  let rules: string | null | undefined = robotsRulesMemo.get(host);
+  if (rules === undefined) {
+    const cacheKey = `robots:${host}`;
+    rules = await kv.get(cacheKey);
+    if (rules === null) {
+      try {
+        const resp = await fetch(`${protocol}//${host}/robots.txt`, {
+          headers: { "User-Agent": "agentsweb" },
+          signal: AbortSignal.timeout(5_000),
+          redirect: "follow",
+        });
+        rules = resp.ok ? (await resp.text()).slice(0, 100_000) : "";
+      } catch {
+        rules = "";
+      }
+      // Cache 6h. Empty string = no/unreachable robots.txt = allow all.
+      waitUntilBg(kv.put(cacheKey, rules, { expirationTtl: 21_600 }));
+    }
+    if (robotsRulesMemo.size > 1000) robotsRulesMemo.clear(); // bound isolate memory
+    robotsRulesMemo.set(host, rules ?? "");
+  }
+  if (!rules) return true;
+  try {
+    return robotsPathAllowed(rules, path);
+  } catch {
+    return true;
+  }
 }
 
 // ============================================================
@@ -1531,6 +1725,11 @@ async function handleResearch(query: string, count: number, kv: KVNamespace, ip:
 // ============================================================
 
 async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: string; source: string } | null> {
+  const rc = rcStore.getStore();
+  const resolvedEnv = env || rc?.env;
+
+  // Honor robots.txt opt-out before we fetch anything ourselves.
+  if (rc?.kv && !(await robotsAllows(url, rc.kv))) return null;
 
   // === ALL SOURCES IN PARALLEL — first good result wins immediately ===
   try {
@@ -1539,12 +1738,12 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
 
       // Cloudflare Browser Run (renders JS, best for SPAs — highest quality)
       (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
-        if (!env?.CF_API_TOKEN || !env?.CF_ACCOUNT_ID) return null;
+        if (!resolvedEnv?.CF_API_TOKEN || !resolvedEnv?.CF_ACCOUNT_ID) return null;
         const resp = await fetch(
-          `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/browser-rendering/markdown`,
+          `https://api.cloudflare.com/client/v4/accounts/${resolvedEnv.CF_ACCOUNT_ID}/browser-rendering/markdown`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${env.CF_API_TOKEN}` },
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resolvedEnv.CF_API_TOKEN}` },
             body: JSON.stringify({ url }),
             signal: AbortSignal.timeout(12_000),
           }
@@ -1567,7 +1766,7 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
       })(),
 
       // Codetabs CORS proxy
-      (async (): Promise<{ markdown: string; source: string } | null> => {
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
         const resp = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10_000) });
         if (!resp.ok) return null;
         const md = convertHtmlToMarkdown(await resp.text());
@@ -1575,7 +1774,7 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
       })(),
 
       // Wayback Machine
-      (async (): Promise<{ markdown: string; source: string } | null> => {
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
         const apiResp = await fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(8_000) });
         if (!apiResp.ok) return null;
         const data = (await apiResp.json()) as { archived_snapshots?: { closest?: { available: boolean; url: string } } };
@@ -1589,7 +1788,7 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
       })(),
 
       // Arquivo.pt (Portuguese web archive — surprisingly broad)
-      (async (): Promise<{ markdown: string; source: string } | null> => {
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
         const cdxResp = await fetch(`https://arquivo.pt/wayback/cdx?url=${encodeURIComponent(url)}&limit=1&output=json&sort=reverse`, { signal: AbortSignal.timeout(8_000) });
         if (!cdxResp.ok) return null;
         const text = await cdxResp.text();
@@ -1605,7 +1804,7 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
       })(),
 
       // Raw fetch with browser UA
-      (async (): Promise<{ markdown: string; source: string } | null> => {
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
         const resp = await fetch(url, {
           headers: {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -1620,7 +1819,7 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
       })(),
 
       // Google Cache
-      (async (): Promise<{ markdown: string; source: string } | null> => {
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
         const resp = await fetch(`https://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(url)}&strip=1`, {
           headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
           signal: AbortSignal.timeout(10_000),
@@ -1633,7 +1832,7 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
       })(),
 
       // archive.ph via timemap (find snapshot, fetch via raw)
-      (async (): Promise<{ markdown: string; source: string } | null> => {
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
         // Try both with and without www
         for (const candidate of [url, url.replace("://www.", "://"), url.replace("://", "://www.")]) {
           try {
@@ -1666,7 +1865,7 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
       })(),
 
       // AllOrigins CORS proxy (another free proxy)
-      (async (): Promise<{ markdown: string; source: string } | null> => {
+      (async (): Promise<{ markdown: string; source: string; quality: number } | null> => {
         const resp = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10_000) });
         if (!resp.ok) return null;
         const md = convertHtmlToMarkdown(await resp.text());
@@ -1674,25 +1873,41 @@ async function fetchMarkdownLive(url: string, env?: Env): Promise<{ markdown: st
       })(),
     ];
 
-    // First-success-wins: resolve as soon as any source returns valid content
+    // Quality-aware selection: resolve immediately on a top-tier source
+    // (Jina / Browser Run, quality >= 10). Otherwise keep the best result seen
+    // so far and give slower-but-better sources a brief grace window before
+    // settling — so a fast-but-thin archive snapshot doesn't beat clean markdown.
     const result = await new Promise<{ markdown: string; source: string; quality: number } | null>((resolve) => {
       let resolved = false;
       let pending = sources.length;
+      let best: { markdown: string; source: string; quality: number } | null = null;
+      let graceTimer: ReturnType<typeof setTimeout> | null = null;
+      let safetyTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = () => {
+        if (resolved) return;
+        resolved = true;
+        if (graceTimer) clearTimeout(graceTimer);
+        if (safetyTimer) clearTimeout(safetyTimer);
+        resolve(best);
+      };
 
       for (const p of sources) {
         p.then((r) => {
-          if (!resolved && r && r.markdown.length >= 500) {
-            resolved = true;
-            resolve(r);
-          }
+          if (resolved || !r || r.markdown.length < 500) return;
+          if (!best || r.quality > best.quality) best = r;
+          // Top-tier markdown source — good enough, return now.
+          if (best.quality >= 10) { finish(); return; }
+          // Otherwise let better sources arrive for a short window, then settle.
+          if (!graceTimer) graceTimer = setTimeout(finish, 2_500);
         }).catch(() => {}).finally(() => {
           pending--;
-          if (pending === 0 && !resolved) resolve(null);
+          if (pending === 0) finish(); // all settled — resolve with best (or null)
         });
       }
 
       // Safety timeout — don't wait more than 15s total
-      setTimeout(() => { if (!resolved) { resolved = true; resolve(null); } }, 15_000);
+      safetyTimer = setTimeout(finish, 15_000);
     });
 
     if (result) return result;
@@ -1777,6 +1992,11 @@ async function handleFetchAndCache(url: string, kv: KVNamespace, ip: string, for
         return json({ url: entry.url, markdown: entry.markdown, trust_level: entry.trust_level, source: `cache (${entry.source})`, fresh: false });
       } catch {}
     }
+  }
+
+  // Honor robots.txt opt-out before a live fetch (clear signal vs generic 502)
+  if (!(await robotsAllows(url, kv))) {
+    return json({ error: "blocked by robots.txt — site opted out of agent caching" }, 403);
   }
 
   const result = await fetchMarkdownLive(url, env);
@@ -2859,8 +3079,8 @@ ${pages.map((p) => `  <url>
 export default {
   // Cache warming cron — refreshes entries approaching expiry
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    _rc = { ctx, kv: env.CACHE, env };
     const kv = env.CACHE;
+    await rcStore.run({ ctx, kv, env }, async () => {
 
     // Get URL index
     const indexRaw = await kv.get("index:urls");
@@ -2892,7 +3112,7 @@ export default {
           entry.source = fetched.source;
           entry.content_hash = contentHash;
           entry.updated_at = Date.now();
-          entry.size = markdown.length;
+          entry.size = fetched.markdown.length;
 
           await kv.put(key, JSON.stringify(entry), {
             expirationTtl: getTtl(entry.trust_level, entry.url),
@@ -2900,10 +3120,11 @@ export default {
         }
       } catch { /* skip failures */ }
     }
+    });
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    _rc = { ctx, kv: env.CACHE, env };
+    return rcStore.run({ ctx, kv: env.CACHE, env }, async (): Promise<Response> => {
     const admin = isAdmin(request, env);
     const method = request.method;
     if (!["GET", "PUT", "POST", "OPTIONS", "HEAD"].includes(method)) {
@@ -3044,14 +3265,12 @@ export default {
         const query = url.searchParams.get("q")!;
         if (query.length < 3) return json({ error: "query too short" }, 400);
 
-        // Get all cached URLs from index
-        const indexRaw = await env.CACHE.get("index:urls");
-        if (!indexRaw) return json({ error: "no cached content" }, 404);
-        const urls: string[] = JSON.parse(indexRaw);
+        // Pick the most relevant cached pages by title/snippet (not the oldest
+        // 50) — falls back to most-recently cached when there's no search index.
+        const searchUrls = await selectCandidateUrls(env.CACHE, query, 60);
+        if (!searchUrls.length) return json({ error: "no cached content" }, 404);
 
-        // Search chunks across all pages (limit to first 50 URLs for speed)
         const allMatches: Array<Chunk & { relevance: number }> = [];
-        const searchUrls = urls.slice(0, 50);
 
         await Promise.all(searchUrls.map(async (cachedUrl) => {
           const urlHash = await hashUrl(cachedUrl);
@@ -3096,13 +3315,12 @@ export default {
         const maxPages = Math.min(parseInt(url.searchParams.get("pages") || "5"), 10);
         if (query.length < 3) return json({ error: "query too short" }, 400);
 
-        const indexRaw = await env.CACHE.get("index:urls");
-        if (!indexRaw) return json({ error: "no cached content" }, 404);
-        const urls: string[] = JSON.parse(indexRaw);
+        const searchUrls = await selectCandidateUrls(env.CACHE, query, 60);
+        if (!searchUrls.length) return json({ error: "no cached content" }, 404);
 
         const allChunks: Array<{ url: string; heading: string; text: string; tokens: number; relevance: number }> = [];
 
-        await Promise.all(urls.slice(0, 50).map(async (cachedUrl) => {
+        await Promise.all(searchUrls.map(async (cachedUrl) => {
           const urlHash = await hashUrl(cachedUrl);
           const raw = await env.CACHE.get(`chunks:${urlHash}`);
           if (!raw) return;
@@ -3271,5 +3489,6 @@ export default {
     if (method === "GET" && url.pathname === "/sitemap.xml") return sitemapXml();
 
     return json({ error: "not found" }, 404);
+    });
   },
 };
