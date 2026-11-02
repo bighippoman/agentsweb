@@ -12,6 +12,7 @@ import {
   removal,
   remove,
   evidence,
+  legacyIdentity,
 } from "./store.js";
 import { fetchDocument, providerStatus } from "./retrieval.js";
 import { webSearch } from "./search.js";
@@ -516,7 +517,12 @@ async function handle(
     if (path === "/admin/clear-dmca") {
       const url = normalizeUrl(data.url);
       await env.DB.prepare("DELETE FROM removals WHERE key=?").bind(url).run();
-      await env.CACHE.delete(`dmca:${await hash(url)}`);
+      // Owner-approved reinstatement must also clear pre-v2 URL identities.
+      await Promise.all(
+        [...new Set([url, legacyIdentity(url)])].map(async (identity) =>
+          env.CACHE.delete(`dmca:${await hash(identity)}`),
+        ),
+      );
       return json({ status: "cleared", url });
     }
     if (

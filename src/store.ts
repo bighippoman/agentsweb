@@ -34,7 +34,7 @@ export async function removal(env: Env, raw: string): Promise<string | null> {
       : null;
 }
 
-function legacyIdentity(raw: string): string {
+export function legacyIdentity(raw: string): string {
   const u = new URL(raw);
   u.protocol = "https:";
   u.hostname = u.hostname.replace(/^www\./, "");
