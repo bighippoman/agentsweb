@@ -15,7 +15,7 @@ import {
 import { normalizeUrl } from "../src/url-identity";
 import { convertHtmlToMarkdown } from "../src/html-to-md";
 import { robotsPathAllowed } from "../src/robots";
-import { contentProblem, passages } from "../src/content";
+import { contentProblem, passages, hash } from "../src/content";
 import { fetchDocument } from "../src/retrieval";
 import { safeFetch } from "../src/transport";
 
@@ -288,4 +288,24 @@ it("passage offsets identify exact verbatim text after whitespace trimming", () 
   expect(chunks.length).toBeGreaterThan(1);
   for (const passage of chunks)
     expect(source.slice(passage.start, passage.end)).toBe(passage.text);
+});
+
+it("authenticated reinstatement clears removals stored under a legacy URL identity", async () => {
+  const url = "https://www.legacy.example.org/Article/";
+  await seed(url);
+  await env.CACHE.put(
+    "dmca:" + (await hash("https://legacy.example.org/Article")),
+    "removed",
+  );
+  expect(await readDocument(env, url)).toBeNull();
+  const response = await request("/admin/clear-dmca", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer test-admin",
+    },
+    body: JSON.stringify({ url }),
+  });
+  expect(response.status).toBe(200);
+  expect((await readDocument(env, url))?.url).toBe(url);
 });
