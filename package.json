@@ -1,16 +1,29 @@
 {
   "name": "agentsweb",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
-    "predeploy": "tsc --noEmit",
-    "deploy": "wrangler deploy"
+    "predeploy": "npm run check",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250501.0",
+    "@cloudflare/vitest-plugin": "^1.5.0",
+    "@cloudflare/workers-types": "^5.20261102.1",
+    "@types/turndown": "^5.0.6",
     "typescript": "^5.8.0",
+    "vitest": "^5.1.0",
     "wrangler": "^4.14.0"
+  },
+  "dependencies": {
+    "linkedom": "^0.18.15",
+    "turndown": "^7.2.4"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
   }
 }

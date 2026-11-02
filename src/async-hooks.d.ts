@@ -11,7 +11,11 @@ declare module "node:async_hooks" {
   export class AsyncLocalStorage<T> {
     getStore(): T | undefined;
     run<R>(store: T, callback: () => R): R;
-    run<R, A extends unknown[]>(store: T, callback: (...args: A) => R, ...args: A): R;
+    run<R, A extends unknown[]>(
+      store: T,
+      callback: (...args: A) => R,
+      ...args: A
+    ): R;
     enterWith(store: T): void;
     disable(): void;
   }
